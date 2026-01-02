@@ -1,19 +1,19 @@
 //Basic implementation for circuit, gate, and permutations
-use rand::{seq::SliceRandom, Rng};
+use rand::{Rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::max as std_max,
-    collections::{HashSet, HashMap},
+    collections::{HashMap, HashSet},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Gate{
-    pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
+pub struct Gate {
+    pub pins: [usize; 3], //one active wire (0) and two control wires (1,2)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CircuitSeq {
-    pub gates: Vec<[u8;3]>, 
+    pub gates: Vec<[u8; 3]>,
 }
 
 //Permutations are all the possible outputs of a circuit
@@ -28,37 +28,32 @@ impl Gate {
         std_max(std_max(self.pins[0], self.pins[1]), self.pins[2])
     }
 
-    pub fn collides_index(gate: &[u8;3], other: &[u8;3]) -> bool {
-        gate[0] == other[1] 
-            || gate[0] == other[2]
-            || gate[1] == other[0] 
-            || gate[2] == other[0]
+    pub fn collides_index(gate: &[u8; 3], other: &[u8; 3]) -> bool {
+        gate[0] == other[1] || gate[0] == other[2] || gate[1] == other[0] || gate[2] == other[0]
     }
     //b is "larger"
-    pub fn ordered_index(gate: &[u8;3], other: &[u8;3]) -> bool {
+    pub fn ordered_index(gate: &[u8; 3], other: &[u8; 3]) -> bool {
         if gate[0] > other[0] {
-            return false
-        }
-        else if gate[0] == other[0]{
+            return false;
+        } else if gate[0] == other[0] {
             if gate[1] > other[1] {
-                return false
-            }
-            else if gate[1] == other[1] {
-                return gate[2] < other[2]
+                return false;
+            } else if gate[1] == other[1] {
+                return gate[2] < other[2];
             }
         }
         true
     }
 
     #[inline(always)]
-    pub fn evaluate_index(state: usize, gate: [u8;3]) -> usize {
+    pub fn evaluate_index(state: usize, gate: [u8; 3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
         state ^ (c1 | ((!c2) & 1)) << gate[0]
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u8;3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &Vec<[u8; 3]>) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -69,9 +64,7 @@ impl Gate {
 
 impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
-        Permutation {
-            data,
-        }
+        Permutation { data }
     }
     pub fn is_perm(&self) -> bool {
         let mut temp_perm = self.clone();
@@ -79,14 +72,12 @@ impl Permutation {
         temp_perm == Permutation::id_perm(self.data.len())
     }
 
-    pub fn id_perm(n:usize) -> Permutation {
+    pub fn id_perm(n: usize) -> Permutation {
         let temp_data = (0..n).collect();
-        Permutation { 
-            data: temp_data, 
-        }
+        Permutation { data: temp_data }
     }
 
-    pub fn rand_perm(n:usize) -> Permutation {
+    pub fn rand_perm(n: usize) -> Permutation {
         let mut p = Permutation::id_perm(n);
         let mut rng = rand::rng();
         p.data.shuffle(&mut rng);
@@ -95,10 +86,11 @@ impl Permutation {
 
     pub fn invert(&self) -> Permutation {
         let mut inv = vec![0; self.data.len()];
-        self.data.iter().enumerate().for_each(|(i, &val)| inv[val] = i);
-        Permutation { 
-            data: inv, 
-        }
+        self.data
+            .iter()
+            .enumerate()
+            .for_each(|(i, &val)| inv[val] = i);
+        Permutation { data: inv }
     }
 
     pub fn compose(&self, other: &Permutation) -> Permutation {
@@ -106,7 +98,8 @@ impl Permutation {
             panic!("Permutation length mismatch in compose");
         }
 
-        let data = self.data
+        let data = self
+            .data
             .iter()
             .enumerate()
             .map(|(i, &_x)| self.data[other.data[i]])
@@ -116,7 +109,8 @@ impl Permutation {
     }
 
     pub fn repr(&self) -> String {
-        self.data.iter()
+        self.data
+            .iter()
             .map(|&x| x.to_string())
             .collect::<Vec<_>>()
             .join(",")
@@ -208,10 +202,242 @@ impl Permutation {
 }
 
 impl CircuitSeq {
+    pub fn to_bench(&self, num_wires: usize) -> String {
+        let mut sb = String::new();
+
+        // Inputs
+        for i in 0..num_wires {
+            sb.push_str(&format!("INPUT({})\n", i));
+        }
+        sb.push('\n');
+
+        // SSA state: wire_id -> current_version
+        // e.g. wire 0 starts at version 0 ("0_0")
+        // But simplified bench format usually uses integers.
+        // Let's use unique integers for every wire version.
+        // Initial wires are 0..num_wires-1
+        let mut wire_heads: Vec<usize> = (0..num_wires).collect();
+        let mut next_id = num_wires;
+
+        for gate in &self.gates {
+            let t = gate[0] as usize;
+            let c1 = gate[1] as usize;
+            let c2 = gate[2] as usize;
+
+            let t_in = wire_heads[t];
+            let c1_in = wire_heads[c1];
+            let c2_in = wire_heads[c2];
+
+            let t_out = next_id;
+            next_id += 1;
+            wire_heads[t] = t_out;
+
+            // OUTPUT = ECA57(TARGET, C1, C2)
+            // Note: Simplifier expects "OUTPUT = GATE(INPUTS...)"
+            sb.push_str(&format!(
+                "{} = ECA57({}, {}, {})\n",
+                t_out, t_in, c1_in, c2_in
+            ));
+        }
+        sb.push('\n');
+
+        // Outputs
+        for i in 0..num_wires {
+            sb.push_str(&format!("OUTPUT({})\n", wire_heads[i]));
+        }
+
+        sb
+    }
+
+    pub fn valid_eca57(&self) -> bool {
+        // Since CircuitSeq structure implicitly assumes valid gates (u8 wires),
+        // this is mostly about checking if the sequence logic makes sense if we were to simulate it.
+        // But CircuitSeq IS the definition.
+        // Maybe we want to check if wires don't exceed max?
+        true
+    }
+
+    pub fn from_bench(bench_str: &str, num_wires: usize) -> Result<Self, String> {
+        use std::collections::{HashMap, VecDeque};
+
+        struct BenchGate {
+            lhs: usize,
+            ops: [usize; 3],
+            original_idx: usize,
+        }
+
+        let mut parsed_gates = Vec::new();
+        // Maps SSA ID produced -> Gate Index in parsed_gates
+        let mut producer_map: HashMap<usize, usize> = HashMap::new();
+        // Maps SSA ID consumed (as op0/target) -> SSA ID produced (next version)
+        // This defines the "spine" of a wire: v0 -> v1 -> v2 ...
+        // We use this for WAR dependencies: read of v0 must happen before write of v1.
+        let mut next_version: HashMap<usize, usize> = HashMap::new();
+
+        // 1. Parse all gates first
+        for line in bench_str.lines() {
+            let line = line.trim();
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.starts_with("INPUT")
+                || line.starts_with("OUTPUT")
+            {
+                continue;
+            }
+
+            if let Some((lhs_str, rhs)) = line.split_once('=') {
+                let lhs_str = lhs_str.trim();
+                let lhs_id: usize = lhs_str
+                    .parse()
+                    .map_err(|_| format!("Invalid LHS: {}", lhs_str))?;
+
+                if rhs.trim().starts_with("ECA57") {
+                    let inside = rhs
+                        .trim()
+                        .trim_start_matches("ECA57(")
+                        .trim_end_matches(')');
+                    let parts: Vec<&str> = inside.split(',').map(|s| s.trim()).collect();
+                    if parts.len() != 3 {
+                        return Err(format!("ECA57 expected 3 args, got {}", parts.len()));
+                    }
+                    let op0: usize = parts[0].parse().map_err(|_| "Invalid op0")?;
+                    let op1: usize = parts[1].parse().map_err(|_| "Invalid op1")?;
+                    let op2: usize = parts[2].parse().map_err(|_| "Invalid op2")?;
+
+                    let idx = parsed_gates.len();
+                    parsed_gates.push(BenchGate {
+                        lhs: lhs_id,
+                        ops: [op0, op1, op2],
+                        original_idx: idx,
+                    });
+
+                    if producer_map.insert(lhs_id, idx).is_some() {
+                        return Err(format!("Duplicate assignment to SSA ID {}", lhs_id));
+                    }
+                    // op0 is the "previous version" of the wire targeted.
+                    // The gate produces lhs_id as the "next version".
+                    // Record transition: op0 -> lhs_id
+                    next_version.insert(op0, lhs_id);
+                }
+            }
+        }
+
+        // 2. Build Dependency Graph
+        let num_gates = parsed_gates.len();
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); num_gates];
+        let mut in_degree: Vec<usize> = vec![0; num_gates];
+
+        for (u, gate) in parsed_gates.iter().enumerate() {
+            // A. RAW Dependencies (Data Flow): Writer -> Reader
+            // Gate u reads op0, op1, op2. It must run AFTER the writers of these ops.
+            // (Inputs like 0..N-1 have no writer in parsed_gates, so skips lookup).
+            for &op in &gate.ops {
+                if let Some(&writer_idx) = producer_map.get(&op) {
+                    // dependency: writer (v) -> reader (u)
+                    adjacency[writer_idx].push(u);
+                    in_degree[u] += 1;
+                }
+            }
+
+            // B. WAR Dependencies (Anti-Dependency): Reader -> Writer
+            // Gate u reads op (as Control). It must run BEFORE the gate that OVERWRITES op.
+            // op0 is Target (Read-Modify-Write). So u IS the writer of next version.
+            // We care about op1 and op2 (Read-Only).
+            // If u reads op1, and some gate v WRITES op1 (modifies the wire), u must precede v.
+            // The gate that "writes op1" is the gate that takes op1 as its op0 (Target).
+            // We stored this in `next_version`: op1 -> next_ver.
+            // The writer of `next_ver` is the gate v.
+            for &op_read in &[gate.ops[1], gate.ops[2]] {
+                if let Some(&next_ver) = next_version.get(&op_read) {
+                    // op_read is overwritten/consumed to produce next_ver.
+                    // Find the gate v that produced next_ver.
+                    if let Some(&v) = producer_map.get(&next_ver) {
+                        // Dependency: u (reader) -> v (writer)
+                        // Avoid self-loops? u reads op1. v uses op1 as target.
+                        // Can u == v? ECA57(t, t, c)?
+                        // random_circuit forbids this. But if it happens:
+                        // u reads t as control, and writes t.
+                        // "Read happens before Write" is intrinsic to atomic gate.
+                        // Dependency u -> u is implicit/harmless or invalid for topo sort.
+                        // We strictly need u -> v if u != v.
+                        if u != v {
+                            adjacency[u].push(v);
+                            in_degree[v] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Topological Sort (Kahn's Algorithm)
+        // 3. Randomized Topological Sort (Kahn's Algorithm)
+        let mut queue: Vec<usize> = Vec::new(); // Changed to Vec for random access
+        for i in 0..num_gates {
+            if in_degree[i] == 0 {
+                queue.push(i);
+            }
+        }
+
+        let mut sorted_indices = Vec::with_capacity(num_gates);
+        let mut rng = rand::thread_rng();
+
+        while !queue.is_empty() {
+            // Pick a random available node to process next
+            // This maximizes entropy in the instruction schedule
+            let idx = rng.gen_range(0..queue.len());
+            let u = queue.swap_remove(idx);
+
+            sorted_indices.push(u);
+            for &v in &adjacency[u] {
+                in_degree[v] -= 1;
+                if in_degree[v] == 0 {
+                    queue.push(v);
+                }
+            }
+        }
+
+        if sorted_indices.len() != num_gates {
+            return Err(
+                "Cycle detected in BENCH dependencies (likely invalid SSA or WAR loop)".to_string(),
+            );
+        }
+
+        // 4. Reconstruct CircuitSeq using sorted order
+        let mut result_gates = Vec::with_capacity(num_gates);
+        let mut id_to_wire: HashMap<usize, u8> = HashMap::new();
+        // Initialize maps for inputs 0..N-1
+        for i in 0..num_wires {
+            id_to_wire.insert(i, i as u8);
+        }
+
+        for &idx in &sorted_indices {
+            let gate = &parsed_gates[idx];
+
+            let t_wire = *id_to_wire
+                .get(&gate.ops[0])
+                .ok_or_else(|| format!("Unknown operand ID {} (Graph broken?)", gate.ops[0]))?;
+            let c1_wire = *id_to_wire
+                .get(&gate.ops[1])
+                .ok_or_else(|| format!("Unknown operand ID {}", gate.ops[1]))?;
+            let c2_wire = *id_to_wire
+                .get(&gate.ops[2])
+                .ok_or_else(|| format!("Unknown operand ID {}", gate.ops[2]))?;
+
+            result_gates.push([t_wire, c1_wire, c2_wire]);
+
+            // Map LHS to the same wire index as Target
+            id_to_wire.insert(gate.lhs, t_wire);
+        }
+
+        Ok(CircuitSeq {
+            gates: result_gates,
+        })
+    }
+
     pub fn adjacent_id(&self) -> bool {
-        for i in 0..(self.gates.len()-1) {
-            if self.gates[i] == self.gates[i+1] {
-                return true
+        for i in 0..(self.gates.len() - 1) {
+            if self.gates[i] == self.gates[i + 1] {
+                return true;
             }
         }
         false
@@ -224,7 +450,7 @@ impl CircuitSeq {
     //small vec is okay since this is never called for num > 32
     pub fn permutation(&self, num_wires: usize) -> Permutation {
         let size = 1 << num_wires;
-        
+
         let mut output = vec![0; size];
 
         for input in 0..size {
@@ -244,7 +470,7 @@ impl CircuitSeq {
         blob
     }
 
-    pub fn repr_blob_gate(gate: &[u8;3]) -> Vec<u8> {
+    pub fn repr_blob_gate(gate: &[u8; 3]) -> Vec<u8> {
         let mut blob = Vec::with_capacity(3);
         blob.push(gate[0] as u8);
         blob.push(gate[1] as u8);
@@ -269,11 +495,7 @@ impl CircuitSeq {
         }
 
         if perm.data.len() != n {
-            panic!(
-                "wrong size perm! got {}, have {} wires",
-                perm.data.len(),
-                n
-            );
+            panic!("wrong size perm! got {}, have {} wires", perm.data.len(), n);
         }
 
         if !perm.is_perm() {
@@ -292,7 +514,7 @@ impl CircuitSeq {
     // Rewires the first gate to match `gate`, and adjusts remaining wires to a valid permutation
     pub fn rewire_first_gate(&mut self, target_gate: [u8; 3], num_wires: usize) {
         if self.gates.is_empty() {
-            return
+            return;
         }
 
         let first_gate = self.gates[0];
@@ -388,9 +610,9 @@ impl CircuitSeq {
     pub fn from_string(s: &str) -> Self {
         fn char_to_wire(c: char) -> u8 {
             match c {
-                '0'..='9' => c as u8 - b'0',          // 0-9
-                'a'..='z' => c as u8 - b'a' + 10,     // 10-35
-                'A'..='Z' => c as u8 - b'A' + 36,     // 36-61
+                '0'..='9' => c as u8 - b'0',      // 0-9
+                'a'..='z' => c as u8 - b'a' + 10, // 10-35
+                'A'..='Z' => c as u8 - b'A' + 36, // 36-61
                 '!' => 62,
                 '@' => 63,
                 '#' => 64,
@@ -455,9 +677,10 @@ impl CircuitSeq {
         let mut result = String::new();
 
         // Local character map (0-9, a-z, A-Z)
-        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
-            .chars()
-            .collect();
+        let wire_map_chars: Vec<char> =
+            "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
+                .chars()
+                .collect();
 
         // --- Pretty circuit diagram ---
         for wire in 0..num_wires {
@@ -465,7 +688,7 @@ impl CircuitSeq {
             for gate in &self.gates {
                 if gate[0] == wire as u8 {
                     result += "( )";
-                } else if gate[1] == wire as u8{
+                } else if gate[1] == wire as u8 {
                     result += "-●-";
                 } else if gate[2] == wire as u8 {
                     result += "-○-";
@@ -483,12 +706,7 @@ impl CircuitSeq {
             .iter()
             .map(|g| {
                 g.iter()
-                    .map(|&x| {
-                        wire_map_chars
-                            .get(x as usize)
-                            .unwrap_or(&'?')
-                            .to_string()
-                    })
+                    .map(|&x| wire_map_chars.get(x as usize).unwrap_or(&'?').to_string())
                     .collect::<String>()
                     + ";"
             })
@@ -568,11 +786,13 @@ impl CircuitSeq {
         let new_gates: Vec<[u8; 3]> = subcircuit
             .gates
             .iter()
-            .map(|&[t, c1, c2]| [
-                *wire_map.get(&t).unwrap(),
-                *wire_map.get(&c1).unwrap(),
-                *wire_map.get(&c2).unwrap(),
-            ])
+            .map(|&[t, c1, c2]| {
+                [
+                    *wire_map.get(&t).unwrap(),
+                    *wire_map.get(&c1).unwrap(),
+                    *wire_map.get(&c2).unwrap(),
+                ]
+            })
             .collect();
 
         CircuitSeq { gates: new_gates }
@@ -591,7 +811,12 @@ impl CircuitSeq {
     }
 
     //no check on num_wires
-    pub fn probably_equal(&self, other_circuit: &Self, num_wires: usize, num_inputs: usize) -> Result<(), String> {
+    pub fn probably_equal(
+        &self,
+        other_circuit: &Self,
+        num_wires: usize,
+        num_inputs: usize,
+    ) -> Result<(), String> {
         let mut rng = rand::rng();
         let mask: usize = if num_wires < usize::BITS as usize {
             (1 << num_wires) - 1
@@ -602,7 +827,7 @@ impl CircuitSeq {
             // generate u64, then mask to get the lower num_wires bits
             let random_input = (rng.random::<u64>() as usize) & mask;
 
-            let self_output = Gate::evaluate_index_list( random_input, &self.gates);
+            let self_output = Gate::evaluate_index_list(random_input, &self.gates);
             let other_output = Gate::evaluate_index_list(random_input, &other_circuit.gates);
 
             if self_output != other_output {
@@ -616,12 +841,16 @@ impl CircuitSeq {
 
 pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for c in 0..n {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 gates.push([a, b, c]);
             }
         }
@@ -643,8 +872,7 @@ mod tests {
     use std::io::Write;
     #[test]
     pub fn test_canonicalization() {
-        let contents = fs::read_to_string("before_canon.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("before_canon.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
 
         // Proceed as before

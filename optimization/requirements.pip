@@ -1,0 +1,4 @@
+# Python dependencies for SAT-based circuit optimization
+# Install with: pip install -r optimization/requirements.pip
+python-sat>=1.8.dev12
+networkx>=2.6.3

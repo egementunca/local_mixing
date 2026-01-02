@@ -1,25 +1,36 @@
 pub mod circuit;
-pub mod replace;
+pub mod optimize;
 pub mod rainbow;
 pub mod random;
-use pyo3::prelude::*;
-use numpy::PyArray2;
-use std::fs;
+pub mod replace;
 use crate::circuit::CircuitSeq;
-use std::time::Instant;
-use rand::Rng;
+#[cfg(feature = "python")]
+use numpy::PyArray2;
+#[cfg(feature = "python")]
 use numpy::ndarray::Array2;
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+use rand::Rng;
+use std::fs;
 use std::io::{self, Write};
+use std::time::Instant;
 
+#[cfg(feature = "python")]
 #[pyfunction]
-fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
+fn heatmap(
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    c1: &str,
+    c2: &str,
+    canon: bool,
+) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
-    let circuit_one_str = fs::read_to_string(c1)
-        .expect("Failed to read butterfly_recent.txt");
-    let circuit_two_str = fs::read_to_string(c2)
-        .expect("Failed to read butterfly_recent.txt");
+    let circuit_one_str = fs::read_to_string(c1).expect("Failed to read butterfly_recent.txt");
+    let circuit_two_str = fs::read_to_string(c2).expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     if canon {
@@ -81,9 +92,20 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
     pyarray.into()
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
-fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, x1: usize, x2: usize, y1: usize, y2: usize, c1_path: &str,
-    c2_path: &str) -> Py<PyArray2<f64>> {
+fn heatmap_slice(
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
+    c1_path: &str,
+    c2_path: &str,
+) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
@@ -151,6 +173,7 @@ fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool
     pyarray.into()
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn local_mixing(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // wrap the function, passing the module `m`

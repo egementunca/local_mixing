@@ -1,12 +1,9 @@
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
-    random::random_data::{
-        contiguous_convex,
-        find_convex_subcircuit,
-        get_canonical,
-        random_circuit,
-    },
     rainbow::canonical::Canonicalization,
+    random::random_data::{
+        contiguous_convex, find_convex_subcircuit, get_canonical, random_circuit,
+    },
 };
 
 use itertools::Itertools;
@@ -63,8 +60,14 @@ impl<'txn> Iterator for Iter<'txn> {
         }
 
         unsafe {
-            let mut key = ffi::MDB_val { mv_size: 0, mv_data: ptr::null_mut() };
-            let mut data = ffi::MDB_val { mv_size: 0, mv_data: ptr::null_mut() };
+            let mut key = ffi::MDB_val {
+                mv_size: 0,
+                mv_data: ptr::null_mut(),
+            };
+            let mut data = ffi::MDB_val {
+                mv_size: 0,
+                mv_data: ptr::null_mut(),
+            };
 
             let rc = ffi::mdb_cursor_get(self.cursor, &mut key, &mut data, self.op);
             self.op = self.next_op;
@@ -83,7 +86,6 @@ impl<'txn> Iterator for Iter<'txn> {
     }
 }
 
-
 pub trait RoCursorExt<'txn> {
     fn iter_from_safe<K>(&mut self, key: K) -> Iter<'txn>
     where
@@ -100,7 +102,12 @@ impl<'txn> RoCursorExt<'txn> for RoCursor<'txn> {
                 mv_size: key.as_ref().len(),
                 mv_data: key.as_ref().as_ptr() as *mut _,
             };
-            lmdb_sys::mdb_cursor_get(self.cursor(), &mut key_val, std::ptr::null_mut(), lmdb_sys::MDB_SET_RANGE)
+            lmdb_sys::mdb_cursor_get(
+                self.cursor(),
+                &mut key_val,
+                std::ptr::null_mut(),
+                lmdb_sys::MDB_SET_RANGE,
+            )
         };
 
         if rc == lmdb_sys::MDB_NOTFOUND {
@@ -119,10 +126,7 @@ impl<'txn> RoCursorExt<'txn> for RoCursor<'txn> {
     }
 }
 
-fn random_perm_from_perm_table(
-    txn: &RoTransaction,
-    db: Database,
-) -> Option<(Vec<u8>, Vec<u8>)> {
+fn random_perm_from_perm_table(txn: &RoTransaction, db: Database) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut cursor = txn.open_ro_cursor(db).ok()?;
     let mut entries = Vec::new();
 
@@ -148,11 +152,16 @@ pub fn random_canonical_id(
 
     loop {
         let perm_db_name = format!("perm_tables_n{}", n);
-        let perm_db = env.open_db(Some(&perm_db_name))
-            .unwrap_or_else(|e| panic!("LMDB DB '{}' not found or failed to open: {:?}", perm_db_name, e));
+        let perm_db = env.open_db(Some(&perm_db_name)).unwrap_or_else(|e| {
+            panic!(
+                "LMDB DB '{}' not found or failed to open: {:?}",
+                perm_db_name, e
+            )
+        });
         let (perm_blob, ms_blob) = {
-            let txn = env.begin_ro_txn()
-                .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", perm_db_name, e));
+            let txn = env.begin_ro_txn().unwrap_or_else(|e| {
+                panic!("Failed to begin RO txn on '{}': {:?}", perm_db_name, e)
+            });
             match random_perm_from_perm_table(&txn, perm_db) {
                 Some(x) => x,
                 None => panic!("perm_tables_n{} is empty or malformed", n),
@@ -173,19 +182,23 @@ pub fn random_canonical_id(
 
         let i = rng.random_range(0..ms.len());
         let mut j = rng.random_range(0..ms.len());
-        while j == i { j = rng.random_range(0..ms.len()); }
+        while j == i {
+            j = rng.random_range(0..ms.len());
+        }
         let m1 = ms[i];
         let m2 = ms[j];
 
         let db1_name = format!("n{}m{}", n, m1);
         let db2_name = format!("n{}m{}", n, m2);
-        
+
         // println!("Searching for perm_len {} in {}", perm_blob.len().trailing_zeros(), db1_name);
 
         let circuit1_blob = {
-            let db1 = env.open_db(Some(&db1_name))
+            let db1 = env
+                .open_db(Some(&db1_name))
                 .unwrap_or_else(|e| panic!("LMDB DB1 '{}' failed to open: {:?}", db1_name, e));
-            let txn = env.begin_ro_txn()
+            let txn = env
+                .begin_ro_txn()
                 .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", db1_name, e));
             random_perm_lmdb(&txn, db1, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db1_name))
@@ -193,9 +206,11 @@ pub fn random_canonical_id(
         let mut ca = CircuitSeq::from_blob(&circuit1_blob);
 
         let circuit2_blob = {
-            let db2 = env.open_db(Some(&db2_name))
+            let db2 = env
+                .open_db(Some(&db2_name))
                 .unwrap_or_else(|e| panic!("LMDB DB2 '{}' failed to open: {:?}", db2_name, e));
-            let txn = env.begin_ro_txn()
+            let txn = env
+                .begin_ro_txn()
                 .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", db2_name, e));
             random_perm_lmdb(&txn, db2, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db2_name))
@@ -236,9 +251,9 @@ pub fn random_id(n: u8, m: usize) -> (CircuitSeq, CircuitSeq) {
 // Return a random subcircuit, its starting index (gate), and ending index
 pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
     let len = circuit.gates.len();
-    
+
     if circuit.gates.len() == 0 {
-        return (CircuitSeq{gates: Vec::new()}, 0, 0)
+        return (CircuitSeq { gates: Vec::new() }, 0, 0);
     }
 
     let mut rng = rand::rng();
@@ -263,12 +278,12 @@ pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
         }
     }
 
-    let start = min(a,b);
-    let end = max(a,b);
+    let start = min(a, b);
+    let end = max(a, b);
 
     let subcircuit = circuit.gates[start..end].to_vec();
 
-    (CircuitSeq{ gates: subcircuit }, start, end)
+    (CircuitSeq { gates: subcircuit }, start, end)
 }
 
 pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSeq, usize, usize) {
@@ -285,7 +300,7 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
     let allowed_len = remaining.min(max_len);
 
     let shift = rng.random_range(0..4); // 0..3
-    let mut sub_len = 1 << shift;        // 1,2,4,8
+    let mut sub_len = 1 << shift; // 1,2,4,8
     if sub_len > allowed_len {
         sub_len = allowed_len;
     }
@@ -328,7 +343,6 @@ pub fn compress(
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
 ) -> CircuitSeq {
-
     let id = Permutation::id_perm(n);
 
     // let t0 = Instant::now();
@@ -374,8 +388,8 @@ pub fn compress(
 
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
-        
-        let (canon_perm_blob, canon_shuf_blob) = if subcircuit.gates.len() <= max && n == 7{
+
+        let (canon_perm_blob, canon_shuf_blob) = if subcircuit.gates.len() <= max && n == 7 {
             let table = format!("n{}m{}", n, min);
             let query = format!(
                 "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
@@ -396,18 +410,13 @@ pub fn compress(
             };
 
             if let Some(row_result) = r.next().unwrap() {
-                
-                (row_result
-                    .get(0)
-                    .expect("Failed to get blob"),
-                row_result
-                    .get(1)
-                    .expect("Failed to get blob"))
-                
+                (
+                    row_result.get(0).expect("Failed to get blob"),
+                    row_result.get(1).expect("Failed to get blob"),
+                )
             } else {
-                continue
+                continue;
             }
-
         } else {
             // let t1 = Instant::now();
             let sub_perm = subcircuit.permutation(n);
@@ -441,26 +450,23 @@ pub fn compress(
             };
 
             if let Some(row_result) = r.next().unwrap() {
-                let blob: Vec<u8> = row_result
-                    .get(0)
-                    .expect("Failed to get blob");
+                let blob: Vec<u8> = row_result.get(0).expect("Failed to get blob");
                 let mut repl = CircuitSeq::from_blob(&blob);
 
-                let repl_perm: Vec<u8> = row_result
-                    .get(1)
-                    .expect("Failed to get blob");
+                let repl_perm: Vec<u8> = row_result.get(1).expect("Failed to get blob");
 
-                let repl_shuf: Vec<u8> = row_result
-                    .get(2)
-                    .expect("Failed to get blob");
+                let repl_shuf: Vec<u8> = row_result.get(2).expect("Failed to get blob");
 
                 if repl.gates.len() <= subcircuit.gates.len() {
-                    let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
+                    let rc = Canonicalization {
+                        perm: Permutation::from_blob(&repl_perm),
+                        shuffle: Permutation::from_blob(&repl_shuf),
+                    };
 
                     if !rc.shuffle.data.is_empty() {
                         repl.rewire(&rc.shuffle, n);
                     }
-                    
+
                     repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
 
                     compressed.gates.splice(start..end, repl.gates);
@@ -493,7 +499,7 @@ pub fn expand_lmdb<'a>(
     dbs: &HashMap<String, lmdb::Database>,
     prepared_stmt: &mut rusqlite::Statement<'a>,
     prepared_stmt2: &mut rusqlite::Statement<'a>,
-    conn: &Connection
+    conn: &Connection,
 ) -> CircuitSeq {
     let mut compressed = c.clone();
     if compressed.gates.is_empty() {
@@ -515,50 +521,42 @@ pub fn expand_lmdb<'a>(
         };
 
         let sub_m = subcircuit.gates.len();
-        let (canon_perm_blob, canon_shuf_blob) =
-        if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+        let (canon_perm_blob, canon_shuf_blob) = if sub_m <= max
+            && ((n == 6 && sub_m == 5) || (n == 7 && sub_m == 4))
+        {
             if n == 7 && sub_m == 4 {
                 let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                    stmt.query_row(
-                        [&subcircuit.repr_blob()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    );
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                    .query_row([&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
 
-                SROW_FETCH_TIME.fetch_add(
-                    row_start.elapsed().as_nanos() as u64,
-                    Ordering::Relaxed,
-                );
+                SROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 match blobs_result {
                     Ok(b) => b,
                     Err(rusqlite::Error::QueryReturnedNoRows) => continue,
                     Err(e) => panic!("SQL query failed: {:?}", e),
                 }
-
             } else if n == 6 && sub_m == 5 {
                 let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
 
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                    stmt.query_row(
-                        [&subcircuit.repr_blob()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    );
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                    .query_row([&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
 
-                SIXROW_FETCH_TIME.fetch_add(
-                    row_start.elapsed().as_nanos() as u64,
-                    Ordering::Relaxed,
-                );
+                SIXROW_FETCH_TIME
+                    .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 match blobs_result {
                     Ok(b) => b,
                     Err(rusqlite::Error::QueryReturnedNoRows) => continue,
                     Err(e) => panic!("SQL query failed: {:?}", e),
                 }
-            
             } else {
                 let table = format!("n{}m{}", n, sub_m);
                 let query = format!(
@@ -568,16 +566,11 @@ pub fn expand_lmdb<'a>(
 
                 let row_start = Instant::now();
                 let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                    conn.query_row(
-                        &query,
-                        [&subcircuit.repr_blob()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    );
+                    conn.query_row(&query, [&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
 
-                ROW_FETCH_TIME.fetch_add(
-                    row_start.elapsed().as_nanos() as u64,
-                    Ordering::Relaxed,
-                );
+                ROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 match blobs_result {
                     Ok(b) => b,
@@ -587,25 +580,25 @@ pub fn expand_lmdb<'a>(
             }
         } else if sub_m <= max && (n >= 4) {
             let db_name = format!("n{}m{}perms", n, sub_m);
-                let db = match dbs.get(&db_name) {
-                    Some(db) => *db,
-                    None => continue,
-                };
+            let db = match dbs.get(&db_name) {
+                Some(db) => *db,
+                None => continue,
+            };
 
-                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+            let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
-                let row_start = Instant::now();
-                let val = match txn.get(db, &subcircuit.repr_blob()) {
-                    Ok(v) => v,
-                    Err(lmdb::Error::NotFound) => continue,
-                    Err(e) => panic!("LMDB get failed: {:?}", e),
-                };
-                LROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let row_start = Instant::now();
+            let val = match txn.get(db, &subcircuit.repr_blob()) {
+                Ok(v) => v,
+                Err(lmdb::Error::NotFound) => continue,
+                Err(e) => panic!("LMDB get failed: {:?}", e),
+            };
+            LROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                let perm = val[..perm_len].to_vec();
-                let shuf = val[perm_len..].to_vec();
+            let perm = val[..perm_len].to_vec();
+            let shuf = val[perm_len..].to_vec();
 
-                (perm, shuf)
+            (perm, shuf)
         } else {
             // let t1 = Instant::now();
             let sub_perm = subcircuit.permutation(n);
@@ -630,7 +623,7 @@ pub fn expand_lmdb<'a>(
                 let txn = env.begin_ro_txn().expect("txn");
 
                 // let t0 = Instant::now();
-                
+
                 let mut res = random_perm_lmdb(&txn, db, prefix);
                 if res.is_none() {
                     let prefix_inv_blob = Permutation::from_blob(&prefix).invert().repr_blob();
@@ -662,7 +655,6 @@ pub fn expand_lmdb<'a>(
                 break;
             }
         }
-
     }
 
     compressed
@@ -707,8 +699,9 @@ pub fn compress_exhaust(
         changed = false;
         let len = compressed.gates.len();
 
-        'outer: for start in 0..len-2 {
-            for end in (start + 2)..len { // skip length 1
+        'outer: for start in 0..len - 2 {
+            for end in (start + 2)..len {
+                // skip length 1
                 if seen_positions.contains(&(start, end)) {
                     continue; // skip positions already replaced in this pass
                 }
@@ -760,7 +753,7 @@ pub fn compress_exhaust(
                                     let delta = repl_len as isize - old_len as isize; // ≤ 0 always
                                     let r_len = repl.gates.len();
                                     compressed.gates.splice(start..end, repl.gates);
-                                    
+
                                     if r_len < subcircuit.gates.len() {
                                         // Update seen_positions
                                         let mut updated = HashSet::new();
@@ -816,19 +809,25 @@ pub fn compress_exhaust(
 }
 
 pub fn compress_big(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
-    conn: &mut Connection, 
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table
+    );
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table2
+    );
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -855,7 +854,8 @@ pub fn compress_big(
             3
         };
         for set_size in (3..=size).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) =
+                find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -871,7 +871,8 @@ pub fn compress_big(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let (start, end) =
+            contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut subcircuit = CircuitSeq { gates };
@@ -884,7 +885,8 @@ pub fn compress_big(
 
         let t2 = Instant::now();
         let used_wires = subcircuit.used_wires();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        subcircuit =
+            CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t3 = Instant::now();
@@ -893,7 +895,17 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
+        let subcircuit_temp = compress_lmdb(
+            &subcircuit,
+            20,
+            &bit_shuf,
+            sub_num_wires,
+            env,
+            dbs,
+            &mut stmt,
+            &mut stmt2,
+            conn,
+        );
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -917,7 +929,9 @@ pub fn compress_big(
             for i in (end + 1)..circuit.gates.len() {
                 circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
             }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
+            circuit
+                .gates
+                .truncate(circuit.gates.len() - (old_len - repl_len));
         } else {
             panic!("Replacement grew, which is not allowed");
         }
@@ -939,18 +953,226 @@ pub fn compress_big(
     circuit
 }
 
-fn random_perm_lmdb(
-    txn: &RoTransaction,
-    db: Database,
-    prefix: &[u8],
-) -> Option<Vec<u8>> {
+/// SAT-based compression for subcircuits.
+///
+/// Uses SAT solver for subcircuits with ≤6 wires (where truth table computation is practical).
+/// Falls back to LMDB compression for larger subcircuits.
+///
+/// # Arguments
+/// * `c` - Circuit to compress
+/// * `trials` - Number of random subcircuit trials
+/// * `num_wires` - Total number of wires in the circuit
+/// * `project_root` - Path to project root for Python optimizer
+/// * `conn` - SQLite connection (for LMDB fallback)
+/// * `env` - LMDB environment (for LMDB fallback)
+/// * `bit_shuf_list` - Permutation shuffles (for LMDB fallback)
+/// * `dbs` - LMDB databases (for LMDB fallback)
+pub fn compress_big_sat(
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    project_root: &str,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
+) -> CircuitSeq {
+    use crate::optimize::compress_sat;
+
+    // Max wires for SAT (2^6 = 64 truth table entries is manageable)
+    const SAT_MAX_WIRES: usize = 6;
+
+    let table = format!("n{}m{}", 7, 4);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table
+    );
+    let mut stmt = conn.prepare(&query_limit).unwrap();
+    let table2 = format!("n{}m{}", 6, 5);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table2
+    );
+    let mut stmt2 = conn.prepare(&query_limit).unwrap();
+    let mut circuit = c.clone();
+    let mut rng = rand::rng();
+
+    // Initial dedup
+    let mut i = 0;
+    while i < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[i] == circuit.gates[i + 1] {
+            circuit.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut sat_attempts = 0;
+    let mut sat_successes = 0;
+    let mut lmdb_fallbacks = 0;
+
+    for _ in 0..trials {
+        let t0 = Instant::now();
+        let mut subcircuit_gates = vec![];
+        // For SAT, prefer smaller subcircuits (≤6 wires)
+        let random_max_wires = rng.random_range(4..=SAT_MAX_WIRES);
+        let size = if random_max_wires >= 6 {
+            5
+        } else if random_max_wires == 5 {
+            4
+        } else {
+            3
+        };
+        for set_size in (3..=size).rev() {
+            let (gates, _) =
+                find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            if !gates.is_empty() {
+                subcircuit_gates = gates;
+                break;
+            }
+        }
+        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if subcircuit_gates.is_empty() {
+            continue;
+        }
+
+        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        subcircuit_gates.sort();
+
+        let t1 = Instant::now();
+        let (start, end) =
+            contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let mut subcircuit = CircuitSeq { gates };
+
+        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
+        let actual_slice = &circuit.gates[start..=end];
+        if actual_slice != &expected_slice[..] {
+            continue;
+        }
+
+        let t2 = Instant::now();
+        let used_wires = subcircuit.used_wires();
+        subcircuit =
+            CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let sub_num_wires = used_wires.len();
+
+        // Use SAT for small subcircuits, LMDB for larger
+        let t4 = Instant::now();
+        let subcircuit_temp = if sub_num_wires <= SAT_MAX_WIRES && subcircuit.gates.len() >= 2 {
+            sat_attempts += 1;
+            let optimized = compress_sat(&subcircuit, sub_num_wires, 30, project_root);
+            if optimized.gates.len() < subcircuit.gates.len() {
+                sat_successes += 1;
+                optimized
+            } else {
+                // SAT didn't find improvement, try LMDB
+                lmdb_fallbacks += 1;
+                let bit_shuf = &bit_shuf_list[sub_num_wires - 3];
+                compress_lmdb(
+                    &subcircuit,
+                    20,
+                    &bit_shuf,
+                    sub_num_wires,
+                    env,
+                    dbs,
+                    &mut stmt,
+                    &mut stmt2,
+                    conn,
+                )
+            }
+        } else {
+            // Fallback to LMDB for large subcircuits
+            let bit_shuf = &bit_shuf_list
+                .get(sub_num_wires.saturating_sub(3))
+                .unwrap_or(&bit_shuf_list[0]);
+            compress_lmdb(
+                &subcircuit,
+                20,
+                &bit_shuf,
+                sub_num_wires,
+                env,
+                dbs,
+                &mut stmt,
+                &mut stmt2,
+                conn,
+            )
+        };
+        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        subcircuit = subcircuit_temp;
+
+        let t5 = Instant::now();
+        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
+        UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t6 = Instant::now();
+        let repl_len = subcircuit.gates.len();
+        let old_len = end - start + 1;
+
+        if repl_len == old_len {
+            for i in 0..repl_len {
+                circuit.gates[start + i] = subcircuit.gates[i];
+            }
+        } else if repl_len < old_len {
+            for i in 0..repl_len {
+                circuit.gates[start + i] = subcircuit.gates[i];
+            }
+            for i in (end + 1)..circuit.gates.len() {
+                circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
+            }
+            circuit
+                .gates
+                .truncate(circuit.gates.len() - (old_len - repl_len));
+        } else {
+            // SAT might return larger circuit, skip replacement
+            continue;
+        }
+        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    // Print SAT stats
+    if sat_attempts > 0 {
+        println!(
+            "  SAT stats: {} attempts, {} successes ({:.1}%), {} LMDB fallbacks",
+            sat_attempts,
+            sat_successes,
+            (sat_successes as f64 / sat_attempts as f64) * 100.0,
+            lmdb_fallbacks
+        );
+    }
+
+    // Final dedup
+    let t7 = Instant::now();
+    let mut i = 0;
+    while i < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[i] == circuit.gates[i + 1] {
+            circuit.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    circuit
+}
+
+fn random_perm_lmdb(txn: &RoTransaction, db: Database, prefix: &[u8]) -> Option<Vec<u8>> {
     let mut cursor = txn.open_ro_cursor(db).ok()?;
     let mut rng = rand::rng();
     let mut chosen: Option<Vec<u8>> = None;
     let mut count = 0;
 
     for (key, _) in cursor.iter_from_safe(prefix) {
-        if !key.starts_with(prefix) { break; }
+        if !key.starts_with(prefix) {
+            break;
+        }
         count += 1;
         if rng.random_range(0..count) == 0 {
             chosen = Some(key[prefix.len()..].to_vec());
@@ -1028,103 +1250,99 @@ pub fn compress_lmdb<'a>(
         subcircuit.canonicalize();
         CANONICALIZE_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        let max = if n == 7 { 3 } else if n == 5 || n == 6 { 5 } else if n == 4 { 6 } else { 10 };
+        let max = if n == 7 {
+            3
+        } else if n == 5 || n == 6 {
+            5
+        } else if n == 4 {
+            6
+        } else {
+            10
+        };
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
 
-        let (canon_perm_blob, canon_shuf_blob) = 
-            if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
-                if n == 7 && sub_m == 4 {
-                    let stmt: &mut Statement<'_> = &mut *prepared_stmt;
-
-                    let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                        stmt.query_row(
-                            [&subcircuit.repr_blob()],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        );
-
-                    SROW_FETCH_TIME.fetch_add(
-                        row_start.elapsed().as_nanos() as u64,
-                        Ordering::Relaxed,
-                    );
-
-                    match blobs_result {
-                        Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
-                    }
-
-                } else if n == 6 && sub_m == 5 {
-                    let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
-
-                    let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                        stmt.query_row(
-                            [&subcircuit.repr_blob()],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        );
-
-                    SIXROW_FETCH_TIME.fetch_add(
-                        row_start.elapsed().as_nanos() as u64,
-                        Ordering::Relaxed,
-                    );
-
-                    match blobs_result {
-                        Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
-                    }
-                } else {
-                    let table = format!("n{}m{}", n, sub_m);
-                    let query = format!(
-                        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
-                        table
-                    );
-                    let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
-                        conn.query_row(
-                            &query,
-                            [&subcircuit.repr_blob()],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        );
-
-                    ROW_FETCH_TIME.fetch_add(
-                        row_start.elapsed().as_nanos() as u64,
-                        Ordering::Relaxed,
-                    );
-
-                    match blobs_result {
-                        Ok(b) => {
-                            println!("{}", table);
-                            b
-                        },
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
-                    }
-                }
-            } else if sub_m <= max && (n >= 4) {
-                let db_name = format!("n{}m{}perms", n, min);
-                let db = match dbs.get(&db_name) {
-                    Some(db) => *db,
-                    None => continue,
-                };
-
-                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+        let (canon_perm_blob, canon_shuf_blob) = if sub_m <= max
+            && ((n == 6 && sub_m == 5) || (n == 7 && sub_m == 4))
+        {
+            if n == 7 && sub_m == 4 {
+                let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                 let row_start = Instant::now();
-                let val = match txn.get(db, &subcircuit.repr_blob()) {
-                    Ok(v) => v,
-                    Err(lmdb::Error::NotFound) => continue,
-                    Err(e) => panic!("LMDB get failed: {:?}", e),
-                };
-                LROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                    .query_row([&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
 
-                let perm = val[..perm_len].to_vec();
-                let shuf = val[perm_len..].to_vec();
+                SROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                (perm, shuf)
+                match blobs_result {
+                    Ok(b) => b,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("SQL query failed: {:?}", e),
+                }
+            } else if n == 6 && sub_m == 5 {
+                let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
+
+                let row_start = Instant::now();
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                    .query_row([&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
+
+                SIXROW_FETCH_TIME
+                    .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                match blobs_result {
+                    Ok(b) => b,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("SQL query failed: {:?}", e),
+                }
             } else {
+                let table = format!("n{}m{}", n, sub_m);
+                let query = format!(
+                    "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                    table
+                );
+                let row_start = Instant::now();
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                    conn.query_row(&query, [&subcircuit.repr_blob()], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    });
+
+                ROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                match blobs_result {
+                    Ok(b) => {
+                        println!("{}", table);
+                        b
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("SQL query failed: {:?}", e),
+                }
+            }
+        } else if sub_m <= max && (n >= 4) {
+            let db_name = format!("n{}m{}perms", n, min);
+            let db = match dbs.get(&db_name) {
+                Some(db) => *db,
+                None => continue,
+            };
+
+            let txn = env.begin_ro_txn().expect("lmdb ro txn");
+
+            let row_start = Instant::now();
+            let val = match txn.get(db, &subcircuit.repr_blob()) {
+                Ok(v) => v,
+                Err(lmdb::Error::NotFound) => continue,
+                Err(e) => panic!("LMDB get failed: {:?}", e),
+            };
+            LROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            let perm = val[..perm_len].to_vec();
+            let shuf = val[perm_len..].to_vec();
+
+            (perm, shuf)
+        } else {
             // Permutation + canonicalization
             let perm_start = Instant::now();
             let sub_perm = subcircuit.permutation(n);
@@ -1160,20 +1378,24 @@ pub fn compress_lmdb<'a>(
                 res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
             }
             LMDB_LOOKUP_TIME.fetch_add(lookup_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            
 
             if let Some(val_blob) = res {
                 let from_blob_start = Instant::now();
                 let mut repl = CircuitSeq::from_blob(&val_blob);
-                FROM_BLOB_TIME.fetch_add(from_blob_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                FROM_BLOB_TIME.fetch_add(
+                    from_blob_start.elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
 
                 let rewire_start = Instant::now();
-                if invert { repl.gates.reverse(); }
+                if invert {
+                    repl.gates.reverse();
+                }
                 repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
                 REWIRE_TIME.fetch_add(rewire_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 let splice_start = Instant::now();
-                if repl.gates.len() == end - start { 
+                if repl.gates.len() == end - start {
                     compressed.gates[start..end].copy_from_slice(&repl.gates);
                 } else {
                     compressed.gates.splice(start..end, repl.gates);
@@ -1204,19 +1426,25 @@ pub fn compress_lmdb<'a>(
 }
 
 pub fn expand_big(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
-    conn: &mut Connection, 
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table
+    );
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table2
+    );
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1228,7 +1456,8 @@ pub fn expand_big(
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=7).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) =
+                find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -1236,16 +1465,17 @@ pub fn expand_big(
         }
 
         if subcircuit_gates.is_empty() {
-            return circuit
+            return circuit;
         }
-        
-        let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
+
+        let mut gates: Vec<[u8; 3]> = vec![[0, 0, 0]; subcircuit_gates.len()];
         for (i, g) in subcircuit_gates.iter().enumerate() {
             gates[i] = circuit.gates[*g];
         }
 
         subcircuit_gates.sort();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let (start, end) =
+            contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
         let mut subcircuit = CircuitSeq { gates };
         // let sub_ref = subcircuit.clone();
         let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
@@ -1265,26 +1495,37 @@ pub fn expand_big(
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
                 if used_wires.contains(&(random as u8)) {
-                    continue
+                    continue;
                 }
                 used_wires.push(random as u8);
                 count += 1;
             }
         }
         used_wires.sort();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        subcircuit =
+            CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
 
-        
         let bit_shuf = &bit_shuf_list[new_wires - 3];
 
-        let subcircuit_temp = expand_lmdb(&subcircuit, 10, &bit_shuf, new_wires, &env, n_wires, dbs, &mut stmt, &mut stmt2, conn);
+        let subcircuit_temp = expand_lmdb(
+            &subcircuit,
+            10,
+            &bit_shuf,
+            new_wires,
+            &env,
+            n_wires,
+            dbs,
+            &mut stmt,
+            &mut stmt2,
+            conn,
+        );
         subcircuit = subcircuit_temp;
 
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        if subcircuit.gates.len() == end+1 - start {
-            circuit.gates[start..end+1].copy_from_slice(&subcircuit.gates);
-        } else {    
-            circuit.gates.splice(start..end+1, subcircuit.gates);
+        if subcircuit.gates.len() == end + 1 - start {
+            circuit.gates[start..end + 1].copy_from_slice(&subcircuit.gates);
+        } else {
+            circuit.gates.splice(start..end + 1, subcircuit.gates);
         }
         // if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
         //     panic!("splice changed something");
@@ -1304,7 +1545,7 @@ pub fn expand_big(
 
 pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
     if c.gates.len() == 0 {
-        return (CircuitSeq { gates: Vec::new() }, Vec::new() )
+        return (CircuitSeq { gates: Vec::new() }, Vec::new());
     }
     let mut obfuscated = CircuitSeq { gates: Vec::new() };
     let mut inverse_starts = Vec::new();
@@ -1342,30 +1583,48 @@ pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
     (obfuscated, inverse_starts)
 }
 
-pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
+pub fn outward_compress(
+    g: &CircuitSeq,
+    r: &CircuitSeq,
+    trials: usize,
+    conn: &mut Connection,
+    bit_shuf: &Vec<Vec<usize>>,
+    n: usize,
+) -> CircuitSeq {
     let mut g = g.clone();
     for gate in r.gates.iter() {
         let wrapper = CircuitSeq { gates: vec![*gate] };
-        g = compress(&wrapper.concat(&g).concat(&wrapper), trials, conn, bit_shuf, n);
+        g = compress(
+            &wrapper.concat(&g).concat(&wrapper),
+            trials,
+            conn,
+            bit_shuf,
+            n,
+        );
     }
     g
 }
 
 pub fn compress_big_ancillas(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
-    conn: &mut Connection, 
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
-    dbs: &HashMap<String, lmdb::Database>, 
-
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table
+    );
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let query_limit = format!(
+        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        table
+    );
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1385,7 +1644,8 @@ pub fn compress_big_ancillas(
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=6).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) =
+                find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -1401,7 +1661,8 @@ pub fn compress_big_ancillas(
         subcircuit_gates.sort();
 
         // let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let (start, end) =
+            contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
         // CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut subcircuit = CircuitSeq { gates };
@@ -1422,14 +1683,15 @@ pub fn compress_big_ancillas(
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
                 if used_wires.contains(&(random as u8)) {
-                    continue
+                    continue;
                 }
                 used_wires.push(random as u8);
                 count += 1;
             }
         }
         // used_wires.sort();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        subcircuit =
+            CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         // REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t3 = Instant::now();
@@ -1439,7 +1701,17 @@ pub fn compress_big_ancillas(
         // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
+        let subcircuit_temp = compress_lmdb(
+            &subcircuit,
+            20,
+            &bit_shuf,
+            sub_num_wires,
+            env,
+            dbs,
+            &mut stmt,
+            &mut stmt2,
+            conn,
+        );
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1463,7 +1735,9 @@ pub fn compress_big_ancillas(
             for i in (end + 1)..circuit.gates.len() {
                 circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
             }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
+            circuit
+                .gates
+                .truncate(circuit.gates.len() - (old_len - repl_len));
         } else {
             panic!("Replacement grew, which is not allowed");
         }
@@ -1497,12 +1771,14 @@ pub enum CollisionType {
 pub struct GatePair {
     a: CollisionType,
     c1: CollisionType,
-    c2: CollisionType
+    c2: CollisionType,
 }
 
 impl GatePair {
     pub fn is_none(gate_pair: &Self) -> bool {
-        gate_pair.a == CollisionType::OnNew && gate_pair.c1 == CollisionType::OnNew && gate_pair.c2 == CollisionType::OnNew
+        gate_pair.a == CollisionType::OnNew
+            && gate_pair.c1 == CollisionType::OnNew
+            && gate_pair.c2 == CollisionType::OnNew
     }
 }
 
@@ -1515,7 +1791,7 @@ pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
     }
 }
 
-pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
+pub fn gate_pair_taxonomy(g1: &[u8; 3], g2: &[u8; 3]) -> GatePair {
     GatePair {
         a: get_collision_type(&g1, g2[0]),
         c1: get_collision_type(&g1, g2[1]),
@@ -1523,14 +1799,22 @@ pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
     }
 }
 
-pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) {
-    println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
+pub fn replace_pairs(
+    circuit: &mut CircuitSeq,
+    num_wires: usize,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+) {
+    println!(
+        "Starting replace_pairs, circuit length: {}",
+        circuit.gates.len()
+    );
 
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
     let mut replaced = 0;
-    let mut to_replace: Vec<Vec<[u8;3]>> = vec![Vec::new(); m / 2];
+    let mut to_replace: Vec<Vec<[u8; 3]>> = vec![Vec::new(); m / 2];
     if m < 2 {
         println!("Circuit too small, returning");
         return;
@@ -1544,15 +1828,13 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         let taxonomy = gate_pair_taxonomy(&g1, &g2);
 
         if !GatePair::is_none(&taxonomy) {
-            pairs.entry(taxonomy)
-                .or_default()
-                .push(i);
+            pairs.entry(taxonomy).or_default().push(i);
         }
         i += 2;
     }
     let num_pairs: usize = pairs.values().map(|v| v.len()).sum();
     println!("Pairs collected: {}", num_pairs);
-    
+
     let mut rng = rand::rng();
     let mut fail = 0;
     while !pairs.is_empty() && fail < 100 {
@@ -1562,7 +1844,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
             Err(_) => {
                 // println!("random_canonical_id failed {}, continuing", fail);
                 continue;
-            },
+            }
         };
         // println!("Generated random canonical id of length {}", id.gates.len());
 
@@ -1571,7 +1853,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
             if !v.is_empty() {
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
-                to_replace[chosen/2] = id.gates.clone();
+                to_replace[chosen / 2] = id.gates.clone();
                 // println!("Replaced pair at index {} with new circuit", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax);
@@ -1587,7 +1869,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
                 id.gates.reverse();
-                to_replace[chosen/2] = id.gates.clone();
+                to_replace[chosen / 2] = id.gates.clone();
                 // println!("Reversed and replaced pair at index {}", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax_rev);
@@ -1622,7 +1904,10 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         // println!("Gates g1: {:?} g2: {:?}", g1, g2);
 
         let tax = gate_pair_taxonomy(&g1, &g2);
-        if tax.a == CollisionType::OnNew || tax.c1 == CollisionType::OnNew || tax.c2 == CollisionType::OnNew {
+        if tax.a == CollisionType::OnNew
+            || tax.c1 == CollisionType::OnNew
+            || tax.c2 == CollisionType::OnNew
+        {
             // println!("Found OnNew collision, assigning new wires...");
         }
 
@@ -1641,10 +1926,10 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 loop {
                     let wire = rng.random_range(0..num_wires) as u8;
                     if used_wires.contains(&wire) {
-                        continue
+                        continue;
                     }
                     used_wires[i] = wire;
-                    break
+                    break;
                 }
             }
         }
@@ -1673,7 +1958,13 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
     println!("Finished replace_pairs");
 }
 
-fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Connection, env: &lmdb::Environment) {
+fn random_gate_replacements(
+    c: &mut CircuitSeq,
+    x: usize,
+    n: usize,
+    _conn: &Connection,
+    env: &lmdb::Environment,
+) {
     let mut rng = rand::rng();
     for _ in 0..x {
         if c.gates.is_empty() {
@@ -1690,7 +1981,7 @@ fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Conn
             while count < num {
                 let random = rng.random_range(0..n);
                 if used_wires.contains(&(random as u8)) {
-                    continue
+                    continue;
                 }
                 used_wires.push(random as u8);
                 count += 1;
@@ -1701,8 +1992,8 @@ fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Conn
             id.rewire_first_gate(rewired_g.gates[0], num);
             id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
             id.gates.remove(0);
-            c.gates.splice(i..i+1, id.gates);
-        } 
+            c.gates.splice(i..i + 1, id.gates);
+        }
     }
 }
 
@@ -1731,35 +2022,161 @@ pub fn print_compress_timers() {
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
 
     println!("--- Compression Timing Totals (minutes) ---");
-    println!("Permutation computation time: {:.2} min", perm as f64 / 60_000_000_000.0);
+    println!(
+        "Permutation computation time: {:.2} min",
+        perm as f64 / 60_000_000_000.0
+    );
     println!("SQL lookup time: {:.2} min", sql as f64 / 60_000_000_000.0);
-    println!("Canonicalization time: {:.2} min", canon as f64 / 60_000_000_000.0);
-    println!("Compress LMDB time: {:.2} min", compress as f64 / 60_000_000_000.0);
-    println!("Rewire subcircuit time: {:.2} min", rewire as f64 / 60_000_000_000.0);
-    println!("Unrewire subcircuit time: {:.2} min", unrewire as f64 / 60_000_000_000.0);
-    println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / 60_000_000_000.0);
-    println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / 60_000_000_000.0);
-    println!("Replacement time: {:.2} min", replace as f64 / 60_000_000_000.0);
-    println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);
-    println!("Pick subcircuit time: {:.2} min", pick as f64 / 60_000_000_000.0);
-    println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / 60_000_000_000.0);
-    println!("SQL row fetch time: {:.2} min", row_fetch as f64 / 60_000_000_000.0);
-    println!("SQL n7m4 prepared row fetch time: {:.2} min", srow_fetch as f64 / 60_000_000_000.0);
-    println!("SQL n6m5 prepared row fetch time: {:.2} min", sixrow_fetch as f64 / 60_000_000_000.0);
-    println!("LMDB row fetch time: {:.2} min", lrow_fetch as f64 / 60_000_000_000.0);
-    println!("LMDB DB open time: {:.2} min", db_open as f64 / 60_000_000_000.0);
-    println!("LMDB transaction begin time: {:.2} min", txn as f64 / 60_000_000_000.0);
-    println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / 60_000_000_000.0);
-    println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / 60_000_000_000.0);
-    println!("Gate splice time: {:.2} min", splice as f64 / 60_000_000_000.0);
-    println!("Trial loop time: {:.2} min", trial as f64 / 60_000_000_000.0);
+    println!(
+        "Canonicalization time: {:.2} min",
+        canon as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Compress LMDB time: {:.2} min",
+        compress as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Rewire subcircuit time: {:.2} min",
+        rewire as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Unrewire subcircuit time: {:.2} min",
+        unrewire as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Convex subcircuit find time: {:.2} min",
+        convex_find as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Contiguous convex subcircuit time: {:.2} min",
+        contiguous as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Replacement time: {:.2} min",
+        replace as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Deduplication time: {:.2} min",
+        dedup as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Pick subcircuit time: {:.2} min",
+        pick as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Subcircuit canonicalize time: {:.2} min",
+        canonicalize as f64 / 60_000_000_000.0
+    );
+    println!(
+        "SQL row fetch time: {:.2} min",
+        row_fetch as f64 / 60_000_000_000.0
+    );
+    println!(
+        "SQL n7m4 prepared row fetch time: {:.2} min",
+        srow_fetch as f64 / 60_000_000_000.0
+    );
+    println!(
+        "SQL n6m5 prepared row fetch time: {:.2} min",
+        sixrow_fetch as f64 / 60_000_000_000.0
+    );
+    println!(
+        "LMDB row fetch time: {:.2} min",
+        lrow_fetch as f64 / 60_000_000_000.0
+    );
+    println!(
+        "LMDB DB open time: {:.2} min",
+        db_open as f64 / 60_000_000_000.0
+    );
+    println!(
+        "LMDB transaction begin time: {:.2} min",
+        txn as f64 / 60_000_000_000.0
+    );
+    println!(
+        "LMDB lookup time: {:.2} min",
+        lmdb_lookup as f64 / 60_000_000_000.0
+    );
+    println!(
+        "CircuitSeq from_blob time: {:.2} min",
+        from_blob as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Gate splice time: {:.2} min",
+        splice as f64 / 60_000_000_000.0
+    );
+    println!(
+        "Trial loop time: {:.2} min",
+        trial as f64 / 60_000_000_000.0
+    );
+}
+
+use std::fs;
+use std::io::Write;
+use std::process::Command;
+
+pub fn compress_external(c: &CircuitSeq, num_wires: usize) -> CircuitSeq {
+    // 1. Write input bench
+    let input_bench = c.to_bench(num_wires);
+
+    // Use unique temp filenames to avoid collision if running parallel (though unsafe in this implementation)
+    // For now simple names
+    let input_path = "temp_input.bench";
+    let output_path = "temp_output.bench";
+
+    let db_dir = "../simplifier/db_eca57";
+
+    let mut file = fs::File::create(input_path).expect("Failed to create input bench file");
+    file.write_all(input_bench.as_bytes())
+        .expect("Failed to write to input bench file");
+
+    // 2. Run simplifier
+    // ./simplifier --basis BENCH --databases <DB_DIR> --input-path <INPUT> --output <OUTPUT>
+    let simplifier_bin = "../simplifier/build/simplifier";
+
+    // println!("Running external simplifier...");
+
+    let output = Command::new(simplifier_bin)
+        .arg("--basis")
+        .arg("BENCH")
+        .arg("--databases")
+        .arg(db_dir)
+        .arg("--input-path")
+        .arg(input_path)
+        .arg("--output")
+        .arg(output_path)
+        .output()
+        .expect("Failed to execute simplifier process");
+
+    if !output.status.success() {
+        eprintln!(
+            "Simplifier failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return c.clone(); // Fallback to original if failure
+    }
+
+    // 3. Read output bench
+    let output_bench = fs::read_to_string(output_path);
+    if output_bench.is_err() {
+        eprintln!("Failed to read output bench file");
+        return c.clone();
+    }
+    let output_bench = output_bench.unwrap();
+
+    // 4. Parse output
+    match CircuitSeq::from_bench(&output_bench, num_wires) {
+        Ok(new_seq) => new_seq,
+        Err(e) => {
+            eprintln!("Failed to parse simplifier output: {}", e);
+            c.clone()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    use std::time::{Instant};
+    use std::time::Instant;
     #[test]
     fn random_circuit_exists_in_db() {
         // Open the SQLite DB
@@ -1801,12 +2218,12 @@ mod tests {
         // Assert that the permutation exists in at least one table
         assert!(found, "Permutation not found in any table!");
     }
+    use crate::replace::mixing::open_all_dbs;
+    use lmdb::Environment;
     use std::fs;
     use std::fs::File;
-    use lmdb::Environment;
-    use std::path::Path;
     use std::io::Write;
-    use crate::replace::mixing::open_all_dbs;
+    use std::path::Path;
     #[test]
     fn test_compression_big_time() {
         // let total_start = Instant::now();
@@ -1839,27 +2256,27 @@ mod tests {
         let t2_start = Instant::now();
         let str2 = "compressed.txt";
         let lmdb = "./db";
-            let _ = std::fs::create_dir_all(lmdb);
+        let _ = std::fs::create_dir_all(lmdb);
 
-            let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(50)      
-                .set_map_size(700 * 1024 * 1024 * 1024) 
-                .open(Path::new(lmdb))
-                .expect("Failed to open lmdb");
+        let env = Environment::new()
+            .set_max_readers(10000)
+            .set_max_dbs(50)
+            .set_map_size(700 * 1024 * 1024 * 1024)
+            .open(Path::new(lmdb))
+            .expect("Failed to open lmdb");
 
         let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
         let mut stable_count = 0;
         let conn = Connection::open("circuits.db").expect("Failed to open DB");
         let mut acc = CircuitSeq::from_string(&data2);
         let bit_shuf_list = (3..=7)
-        .map(|n| {
-            (0..n)
-                .permutations(n)
-                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-                .collect::<Vec<Vec<usize>>>()
-        })
-        .collect();
+            .map(|n| {
+                (0..n)
+                    .permutations(n)
+                    .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                    .collect::<Vec<Vec<usize>>>()
+            })
+            .collect();
         let dbs = open_all_dbs(&env);
         let mut stmts_prepared = HashMap::new();
         let mut stmts_prepared_limit1 = HashMap::new();
@@ -1871,7 +2288,10 @@ mod tests {
                 let stmt = conn.prepare(&query).unwrap();
                 stmts_prepared.insert((n, m), stmt);
 
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                let query_limit = format!(
+                    "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                    table
+                );
                 let stmt_limit = conn.prepare(&query_limit).unwrap();
                 stmts_prepared_limit1.insert((n, m), stmt_limit);
             }
@@ -1884,7 +2304,10 @@ mod tests {
 
             if after == before {
                 stable_count += 1;
-                println!("  Final compression stable {}/6 at {} gates", stable_count, after);
+                println!(
+                    "  Final compression stable {}/6 at {} gates",
+                    stable_count, after
+                );
             } else {
                 println!("  Final compression reduced: {} → {} gates", before, after);
                 stable_count = 0;
@@ -1892,8 +2315,8 @@ mod tests {
         }
 
         File::create("compressed.txt")
-        .and_then(|mut f| f.write_all(acc.repr().as_bytes()))
-        .expect("Failed to write butterfly_recent.txt");
+            .and_then(|mut f| f.write_all(acc.repr().as_bytes()))
+            .expect("Failed to write butterfly_recent.txt");
         let t2_duration = t2_start.elapsed();
         println!(" Second compression finished in {:.2?}", t2_duration);
 
@@ -1902,17 +2325,86 @@ mod tests {
         // println!(" Total test duration: {:.2?}", total_duration);
     }
 
+    pub fn compress_external(c: &CircuitSeq, num_wires: usize) -> CircuitSeq {
+        // 1. Write input bench
+        let input_bench = c.to_bench(num_wires);
+
+        // Use unique temp filenames to avoid collision if running parallel (though unsafe in this implementation)
+        // For now simple names
+        let input_path = "temp_input.bench";
+        let output_path = "temp_output.bench";
+
+        let db_dir = "../simplifier/db_eca57";
+
+        let mut file = fs::File::create(input_path).expect("Failed to create input bench file");
+        file.write_all(input_bench.as_bytes())
+            .expect("Failed to write to input bench file");
+
+        // 2. Run simplifier
+        // ./simplifier --basis BENCH --databases <DB_DIR> --input-path <INPUT> --output <OUTPUT>
+        let simplifier_bin = "../simplifier/build/simplifier";
+
+        // println!("Running external simplifier...");
+
+        let output = Command::new(simplifier_bin)
+            .arg("--basis")
+            .arg("BENCH")
+            .arg("--databases")
+            .arg(db_dir)
+            .arg("--input-path")
+            .arg(input_path)
+            .arg("--output")
+            .arg(output_path)
+            .output()
+            .expect("Failed to execute simplifier process");
+
+        if !output.status.success() {
+            eprintln!(
+                "Simplifier failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return c.clone(); // Fallback to original if failure
+        }
+
+        // 3. Read output bench
+        let output_bench = fs::read_to_string(output_path);
+        if output_bench.is_err() {
+            eprintln!("Failed to read output bench file");
+            return c.clone();
+        }
+        let output_bench = output_bench.unwrap();
+
+        // 4. Parse output
+        match CircuitSeq::from_bench(&output_bench, num_wires) {
+            Ok(new_seq) => new_seq,
+            Err(e) => {
+                eprintln!("Failed to parse simplifier output: {}", e);
+                c.clone()
+            }
+        }
+    }
+
     #[test]
     fn test_random_canon_id() {
         let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(50)      
-                .set_map_size(700 * 1024 * 1024 * 1024) 
-                .open(Path::new("./db"))
-                .expect("Failed to open lmdb");
+            .set_max_readers(10000)
+            .set_max_dbs(50)
+            .set_map_size(700 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open lmdb");
         let conn = Connection::open("circuits.db").expect("Failed to open DB");
-        let circuit = random_canonical_id(&env, &conn, 3).unwrap_or_else(|_| panic!("Failed to run random_canon_id"));
-        if circuit.probably_equal(&CircuitSeq { gates: vec![[1,2,3], [1,2,3]]}, 10, 10000).is_err() {
+        let circuit = random_canonical_id(&env, &conn, 3)
+            .unwrap_or_else(|_| panic!("Failed to run random_canon_id"));
+        if circuit
+            .probably_equal(
+                &CircuitSeq {
+                    gates: vec![[1, 2, 3], [1, 2, 3]],
+                },
+                10,
+                10000,
+            )
+            .is_err()
+        {
             panic!("Not id");
         }
         println!("circuit {:?}", circuit.gates);
@@ -1935,7 +2427,7 @@ mod tests {
         for (key, _value) in cursor.iter() {
             let circuit_blob = &key[perm_len..];
             let circuit = CircuitSeq::from_blob(&circuit_blob);
-            println!("{:?}", circuit.gates); 
+            println!("{:?}", circuit.gates);
         }
 
         Ok(())
@@ -1943,17 +2435,30 @@ mod tests {
 
     #[test]
     fn test_find_perm_lmdb() {
-        let perm = Permutation { data: vec![3, 2, 5, 4, 7, 6, 1, 0, 11, 10, 13, 12, 15, 14, 9, 8, 19, 18, 21, 20, 23, 22, 17, 16, 27, 26, 29, 28, 31, 30, 25, 24, 37, 36, 35, 34, 33, 32, 39, 38, 43, 42, 45, 44, 47, 46, 41, 40, 53, 52, 51, 50, 49, 48, 55, 54, 59, 58, 61, 60, 63, 62, 57, 56, 71, 70, 68, 69, 67, 66, 64, 65, 79, 78, 76, 77, 75, 74, 72, 73, 87, 86, 84, 85, 83, 82, 80, 81, 95, 94, 92, 93, 91, 90, 88, 89, 100, 101, 103, 102, 96, 97, 99, 98, 111, 110, 108, 109, 107, 106, 104, 105, 116, 117, 119, 118, 112, 113, 115, 114, 127, 126, 124, 125, 123, 122, 120, 121]};
+        let perm = Permutation {
+            data: vec![
+                3, 2, 5, 4, 7, 6, 1, 0, 11, 10, 13, 12, 15, 14, 9, 8, 19, 18, 21, 20, 23, 22, 17,
+                16, 27, 26, 29, 28, 31, 30, 25, 24, 37, 36, 35, 34, 33, 32, 39, 38, 43, 42, 45, 44,
+                47, 46, 41, 40, 53, 52, 51, 50, 49, 48, 55, 54, 59, 58, 61, 60, 63, 62, 57, 56, 71,
+                70, 68, 69, 67, 66, 64, 65, 79, 78, 76, 77, 75, 74, 72, 73, 87, 86, 84, 85, 83, 82,
+                80, 81, 95, 94, 92, 93, 91, 90, 88, 89, 100, 101, 103, 102, 96, 97, 99, 98, 111,
+                110, 108, 109, 107, 106, 104, 105, 116, 117, 119, 118, 112, 113, 115, 114, 127,
+                126, 124, 125, 123, 122, 120, 121,
+            ],
+        };
         let prefix = perm.repr_blob();
         let env_path = "./db";
         let db_name = "n4m2";
         let env = Environment::new()
             .set_max_dbs(50)
-            .open(Path::new(env_path)).expect("Failed to open db");
-        let db = env.open_db(Some(&db_name))
-                .unwrap_or_else(|e| panic!("LMDB DB '{}' failed to open: {:?}", db_name, e));
-        let txn = env.begin_ro_txn()
-                .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", "perm_db_name", e));
+            .open(Path::new(env_path))
+            .expect("Failed to open db");
+        let db = env
+            .open_db(Some(&db_name))
+            .unwrap_or_else(|e| panic!("LMDB DB '{}' failed to open: {:?}", db_name, e));
+        let txn = env
+            .begin_ro_txn()
+            .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", "perm_db_name", e));
         let mut cursor = txn.open_ro_cursor(db).ok().expect("Failed to open cursor");
         let mut circuits = Vec::new();
         let mut count = 0;
