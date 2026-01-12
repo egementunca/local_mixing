@@ -1,29 +1,26 @@
 use crate::{
-    circuit::{CircuitSeq, Gate, Permutation},
-    rainbow::canonical::{self, CandSet, Canonicalization},
+    infra::circuit::{CircuitSeq, Gate, Permutation},
+    infra::rainbow::canonical::{self, CandSet, Canonicalization},
 };
 
-use crossbeam::channel::{bounded};
+use crossbeam::channel::bounded;
 use dashmap::DashMap;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use rand::{
-    prelude::IndexedRandom,
-    Rng, RngCore,
-};
+use rand::{Rng, RngCore, prelude::IndexedRandom};
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
 };
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use smallvec::SmallVec;
 use std::{
     collections::HashSet,
     fs::OpenOptions,
     io::Write,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        Arc, 
     },
     thread,
 };
@@ -300,7 +297,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         }
 
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -365,7 +363,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         }
 
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -444,7 +443,10 @@ pub fn find_convex_subcircuit<R: RngCore>(
         //     curr_wires.len(),
         //     selected_gate_ctr
         // );
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -452,7 +454,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
 pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
-    num_wires: usize
+    num_wires: usize,
 ) -> Option<(usize, usize)> {
     // This should never run
     if ordered_convex_gates.len() < 2 {
@@ -473,9 +475,7 @@ pub fn contiguous_convex(
     let mut start = *ordered_convex_gates.first().unwrap();
     let mut end = *ordered_convex_gates.last().unwrap();
 
-    let mut non_convex: Vec<usize> = (start..=end)
-        .filter(|&i| !is_convex[i])
-        .collect();
+    let mut non_convex: Vec<usize> = (start..=end).filter(|&i| !is_convex[i]).collect();
 
     // Left pass
     while !non_convex.is_empty() {
@@ -548,7 +548,7 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
     let len = circuit.gates.len();
 
     if len == 0 {
-        return
+        return;
     }
 
     for _ in 0..rounds {
@@ -599,10 +599,10 @@ pub fn is_level_zero(circuit: &CircuitSeq, index: usize) -> bool {
     target == 0
 }
 
-pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
+pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq {
     let mut circuit = circuit.clone();
     circuit.canonicalize();
-    let mut new_gates: Vec<[u8;3]> = Vec::new();
+    let mut new_gates: Vec<[u8; 3]> = Vec::new();
     let mut c = circuit.clone();
     while !c.gates.is_empty() {
         let mut to_remove: Vec<usize> = Vec::new();
@@ -621,7 +621,7 @@ pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
     if new.probably_equal(&circuit, 64, 100000).is_err() {
         panic!("Left shooting changed functionality");
     }
-    
+
     new
 }
 
@@ -643,7 +643,10 @@ pub struct Skeleton {
 pub fn create_skeleton(circuit: &CircuitSeq) -> (CircuitSeq, Skeleton) {
     let c = left_ordering(&circuit);
     let gates = &c.gates;
-    let mut skel = Skeleton { nodes: Vec::new(), depth: 0 };
+    let mut skel = Skeleton {
+        nodes: Vec::new(),
+        depth: 0,
+    };
     let mut start = 0;
     let mut level = 0;
 
@@ -651,7 +654,11 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> (CircuitSeq, Skeleton) {
         let mut segment = Vec::new();
         let mut i = start;
         while i < gates.len() {
-            if i > start && segment.iter().any(|&(_, g)| Gate::collides_index(&gates[i], &g)) {
+            if i > start
+                && segment
+                    .iter()
+                    .any(|&(_, g)| Gate::collides_index(&gates[i], &g))
+            {
                 break;
             }
             segment.push((i, gates[i].clone()));
@@ -739,17 +746,17 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
         panic!("Didn't add enough gates!");
     }
 
-    if new_gates.probably_equal(&orig_circuit, 64, 100_000).is_err() {
+    if new_gates
+        .probably_equal(&orig_circuit, 64, 100_000)
+        .is_err()
+    {
         panic!("Circuit functionality changed!");
     }
 
     new_gates
 }
 
-pub fn random_walk_no_skeleton<R: RngCore>(
-    circuit: &CircuitSeq,
-    rng: &mut R,
-) -> CircuitSeq {
+pub fn random_walk_no_skeleton<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let n = circuit.gates.len();
     let mut remaining: Vec<bool> = vec![true; n];
     let mut in_candidates: Vec<bool> = vec![false; n];
@@ -811,14 +818,17 @@ pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
 
 pub fn insert_circuit(
     conn: &mut Connection,
-    circuit: &CircuitSeq, 
+    circuit: &CircuitSeq,
     canon: &Canonicalization,
     table_name: &str,
 ) -> Result<()> {
     let key = circuit.repr_blob();
     let perm = canon.perm.repr_blob();
     let shuf = canon.shuffle.repr_blob();
-    let sql = format!("INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table_name);
+    let sql = format!(
+        "INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)",
+        table_name
+    );
     conn.execute(&sql, &[&key, &perm, &shuf])?;
     Ok(())
 }
@@ -857,7 +867,7 @@ pub fn insert_circuits_batch(
 
 pub fn get_canonical(perm: &Permutation, bit_shuf: &Vec<Vec<usize>>) -> Canonicalization {
     // Use a simple hash of the subcircuit as the key
-    let key = perm.repr_blob(); 
+    let key = perm.repr_blob();
 
     // Try to get it from the cache
     if let Some(cached) = CANON_CACHE.get(&key) {
@@ -871,8 +881,14 @@ pub fn get_canonical(perm: &Permutation, bit_shuf: &Vec<Vec<usize>>) -> Canonica
     // compute it
     let canon = perm.canon_simple(bit_shuf);
 
-    // Store 
-    CANON_CACHE.insert(key, (canon.clone().perm.repr_blob(), canon.clone().shuffle.repr_blob()));
+    // Store
+    CANON_CACHE.insert(
+        key,
+        (
+            canon.clone().perm.repr_blob(),
+            canon.clone().shuffle.repr_blob(),
+        ),
+    );
     canon
 }
 
@@ -1001,7 +1017,7 @@ impl Permutation {
         // Pre-allocate viable_sets buffer to reuse
         let mut viable_sets: Vec<CandSet> = Vec::with_capacity(4);
 
-        for weight in 0..=num_bits/2 {
+        for weight in 0..=num_bits / 2 {
             let index_words = canonical::index_set(weight, num_bits); // Vec<usize>
 
             'word_loop: for &w in &index_words {
@@ -1070,7 +1086,7 @@ impl Permutation {
                         return Canonicalization {
                             perm: Permutation { data: Vec::new() },
                             shuffle: Permutation { data: Vec::new() },
-                        }
+                        };
                     }
                 }
 
@@ -1115,7 +1131,11 @@ impl Permutation {
     pub fn from_string(s: &str) -> Self {
         let data = s
             .split(',')
-            .map(|x| x.trim().parse::<usize>().expect("Invalid number in permutation"))
+            .map(|x| {
+                x.trim()
+                    .parse::<usize>()
+                    .expect("Invalid number in permutation")
+            })
             .collect();
 
         Permutation { data }
@@ -1124,7 +1144,7 @@ impl Permutation {
 
 pub fn check_cycles(n: usize, m: usize) -> Result<()> {
     // Open the database
-    let conn = Connection::open("circuits.db")?;
+    let conn = Connection::open("db/circuits.db")?;
     let table_name = format!("n{}m{}", n, m);
 
     // Build the query string with the table name
@@ -1153,7 +1173,7 @@ pub fn check_cycles(n: usize, m: usize) -> Result<()> {
 }
 
 pub fn print_all(table_name: &str) -> Result<()> {
-    let conn = Connection::open("circuits.db")?;
+    let conn = Connection::open("db/circuits.db")?;
 
     let query = format!("SELECT circuit, perm, shuf FROM {}", table_name);
     let mut stmt = conn.prepare(&query)?;
@@ -1183,29 +1203,58 @@ pub fn print_all(table_name: &str) -> Result<()> {
 }
 
 pub fn count_distinct(n: usize, m: usize) -> Result<usize> {
-    let conn = Connection::open("circuits.db")?;
+    let conn = Connection::open("db/circuits.db")?;
     let table_name = format!("n{}m{}", n, m);
-    
+
     let query = format!("SELECT COUNT(DISTINCT perm) FROM {}", table_name);
     let count: usize = conn.query_row(&query, [], |row| row.get(0))?;
-    
-    println!("Number of distinct permutations in {}: {}", table_name, count);
+
+    println!(
+        "Number of distinct permutations in {}: {}",
+        table_name, count
+    );
     Ok(count)
 }
 
 pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for c in 0..n {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 gates.push([a, b, c]);
             }
         }
     }
     gates
+}
+
+pub fn build_initial_table(conn: &mut Connection, n: usize) -> Result<()> {
+    let table = format!("n{}m1", n);
+    create_table(conn, &table)?;
+
+    let gates = base_gates(n);
+    let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
+    let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+
+    let mut batch = Vec::new();
+    for g in gates {
+        let circuit = CircuitSeq { gates: vec![g] };
+        let mut c_clone = circuit.clone();
+        c_clone.canonicalize(); // Just in case, though 1 gate is canonical usually
+        let canon = c_clone.permutation(n).canon_simple(&bit_shuf);
+        batch.push((circuit, canon));
+    }
+
+    insert_circuits_batch(conn, &table, &batch)?;
+    println!("Initialized {} with {} circuits", table, batch.len());
+    Ok(())
 }
 
 pub fn build_from_sql(
@@ -1225,11 +1274,13 @@ pub fn build_from_sql(
     let base_gates_for_thread = Arc::clone(&base_gates);
     let bit_shuf = Arc::new(bit_shuf.clone());
 
-    let total_rows: i64 = conn.query_row(
-        &format!("SELECT MAX(rowid) FROM {}", old_table),
-        [],
-        |row| row.get(0),
-    )?;
+    let total_rows: i64 = conn
+        .query_row(
+            &format!("SELECT MAX(rowid) FROM {}", old_table),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     println!("Total rows in {}: {}", old_table, total_rows);
 
     let chunk_size: i64 = 50_000;
@@ -1256,7 +1307,7 @@ pub fn build_from_sql(
     // Spawn insertion thread
     let insert_handle = thread::spawn(move || {
         let mut insert_conn =
-            Connection::open("./circuits.db").expect("Failed to open DB in insert thread");
+            Connection::open("./db/circuits.db").expect("Failed to open DB in insert thread");
 
         let total_circuits: usize = (total_rows as usize) * base_gates_for_thread.len() * 2; // total circuits to process
         let mut attempted_inserts = 0;
@@ -1311,13 +1362,11 @@ pub fn build_from_sql(
 
         // Process circuits in parallel and stream batches immediately
         rows.par_chunks(500).for_each(|row_chunk| {
-            let mut local_results =
-                Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
+            let mut local_results = Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
 
             for (_rowid, blob) in row_chunk {
                 let old_circuit = CircuitSeq::from_blob(blob);
-                let mut prefix: SmallVec<[[u8; 3]; 64]> =
-                    SmallVec::with_capacity(m);
+                let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                 prefix.extend_from_slice(&old_circuit.gates);
 
                 for g in base_gates.iter() {
@@ -1382,7 +1431,7 @@ pub fn build_from_sql(
 //Speed up SQL queries
 //Should not see for a particular size query, the speed should not vary across multiple runs
 pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
-    let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+    let mut conn = Connection::open("./db/circuits.db").expect("Failed to open DB");
     let table_name = format!("n{}m{}", n, m);
     create_table(&mut conn, &table_name).expect("Failed to create table");
 
@@ -1401,7 +1450,8 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     //TODO: test speed here
     while running.load(Ordering::SeqCst) && (!stop && inserted < count || stop) {
@@ -1416,8 +1466,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
         if batch.len() >= batch_size {
             //let start = std::time::Instant::now();
-            let success_count =
-                insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
+            let success_count = insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
             //let elapsed = start.elapsed();
             inserted += success_count;
             recent += success_count;
@@ -1425,7 +1474,6 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
             // Early stop if >=99% of last batch failed
             if success_count * 100 <= batch_size {
-
                 println!(
                     "Stopping early: only {}/{} inserts succeeded (~{:.2}% success)",
                     success_count,
@@ -1437,7 +1485,10 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
         }
 
         if total_attempts % 50_000 == 0 {
-            println!("Attempts: {}, inserted in last window: {}", total_attempts, recent);
+            println!(
+                "Attempts: {}, inserted in last window: {}",
+                total_attempts, recent
+            );
             recent = 0;
         }
 
@@ -1458,8 +1509,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
     // Insert remaining circuits before exiting
     if !batch.is_empty() {
-        let success_count =
-            insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
+        let success_count = insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
         inserted += success_count;
     }
 
@@ -1469,7 +1519,57 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
     );
 }
 
+pub fn generate_heatmap_data(
+    circuit_one: &CircuitSeq,
+    circuit_two: &CircuitSeq,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+) -> Vec<[f64; 3]> {
+    let mut circuit_one = circuit_one.clone();
+    let mut circuit_two = circuit_two.clone();
+    if flag {
+        circuit_one.canonicalize();
+        circuit_two.canonicalize();
+    }
+    let circuit_one_len = circuit_one.gates.len();
+    let circuit_two_len = circuit_two.gates.len();
 
+    let mut average = vec![[0f64; 3]; (circuit_one_len + 1) * (circuit_two_len + 1)];
+    // Initialize x and y coordinates
+    for i1 in 0..=circuit_one_len {
+        for i2 in 0..=circuit_two_len {
+            let index = i1 * (circuit_two_len + 1) + i2;
+            average[index][0] = i1 as f64;
+            average[index][1] = i2 as f64;
+        }
+    }
+
+    let mut rng = rand::rng();
+
+    for _ in 0..num_inputs {
+        let input_bits: usize = if num_wires < usize::BITS as usize {
+            rng.random_range(0..(1usize << num_wires))
+        } else {
+            rng.random_range(0..=usize::MAX)
+        };
+
+        let evolution_one = circuit_one.evaluate_evolution(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution(input_bits);
+        for i1 in 0..=circuit_one_len {
+            for i2 in 0..=circuit_two_len {
+                let diff = evolution_one[i1] ^ evolution_two[i2];
+                let hamming_dist = diff.count_ones() as f64;
+                let normalized_dist = hamming_dist / num_wires as f64;
+
+                let index = i1 * (circuit_two_len + 1) + i2;
+                average[index][2] += normalized_dist / num_inputs as f64;
+            }
+        }
+    }
+
+    average
+}
 
 #[cfg(test)]
 mod tests {
@@ -1513,7 +1613,9 @@ mod tests {
             }
 
             if subcircuit_gates.len() < 3 {
-                println!("No subcircuit ≥ 3 gates found in this round, retrying.................................................");
+                println!(
+                    "No subcircuit ≥ 3 gates found in this round, retrying................................................."
+                );
             }
         }
 
@@ -1521,8 +1623,14 @@ mod tests {
         println!("Number of search attempts: {}", attempts);
 
         // Basic assertions
-        assert!(subcircuit_gates.len() >= 3, "Subcircuit must have at least 3 gates");
-        assert!(subcircuit_gates.len() <= c.gates.len(), "Subcircuit cannot exceed total gates");
+        assert!(
+            subcircuit_gates.len() >= 3,
+            "Subcircuit must have at least 3 gates"
+        );
+        assert!(
+            subcircuit_gates.len() <= c.gates.len(),
+            "Subcircuit cannot exceed total gates"
+        );
 
         // Check that number of distinct wires is <= max_wires
         let mut wire_set = std::collections::HashSet::new();
@@ -1531,7 +1639,10 @@ mod tests {
                 wire_set.insert(w);
             }
         }
-        assert!(wire_set.len() <= max_wires, "Subcircuit uses too many wires");
+        assert!(
+            wire_set.len() <= max_wires,
+            "Subcircuit uses too many wires"
+        );
         println!("Wires used: {:?}", wire_set);
 
         // Check convexity
@@ -1555,13 +1666,13 @@ mod tests {
         println!("start and end designated: {:?}", &circ.gates[start..=end]);
     }
 
-    use crate::replace::replace::compress;
+    use crate::algorithms::butterfly::replace::compress;
     #[test]
     fn test_compression_speed() {
         // Hard-coded random circuit
-        let c = random_circuit(7,30);
+        let c = random_circuit(7, 30);
 
-        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+        let mut conn = Connection::open("./db/circuits.db").expect("Failed to open DB");
 
         // Run the profiling version of compress_big
         let perms: Vec<Vec<usize>> = (0..7).permutations(7).collect();
@@ -1578,7 +1689,7 @@ mod tests {
     //     // Dummy 16-wire circuit with 30 gates
     //     let c = random_circuit(16,30);
 
-    //     let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+    //     let mut conn = Connection::open("./db/circuits.db").expect("Failed to open DB");
 
     //     let com = compress_big(&c, 10, 16, &mut conn);
     //     println!("compression is okay: {}", com.permutation(16) == c.permutation(16));
@@ -1587,9 +1698,51 @@ mod tests {
     #[test]
     fn test_convexity() {
         // Dummy 16-wire circuit with 30 gates
-        let gates: Vec<[u8; 3]> = vec!
-            [[13, 6, 5], [7, 10, 1], [8, 12, 7], [5, 1, 11], [10, 5, 3], [1, 5, 9], [1, 15, 9], [14, 7, 10], [4, 9, 14], [14, 13, 9], [10, 12, 6], [5, 7, 13], [2, 1, 10], [11, 12, 6], [12, 9, 10], [8, 0, 9], [5, 3, 4], [2, 8, 10], [11, 10, 2], [9, 5, 12], [11, 1, 15], [14, 2, 3], [11, 1, 15], [9, 5, 12], [11, 10, 2], [2, 8, 10], [5, 3, 4], [8, 0, 9], [12, 9, 10], [11, 12, 6], [2, 1, 10], [1, 15, 9], [5, 7, 13], [10, 12, 6], [14, 13, 9], [1, 5, 9], [4, 9, 14], [14, 7, 10], [10, 5, 3], [5, 1, 11], [8, 12, 7], [7, 10, 1], [13, 6, 5]]
-        ;
+        let gates: Vec<[u8; 3]> = vec![
+            [13, 6, 5],
+            [7, 10, 1],
+            [8, 12, 7],
+            [5, 1, 11],
+            [10, 5, 3],
+            [1, 5, 9],
+            [1, 15, 9],
+            [14, 7, 10],
+            [4, 9, 14],
+            [14, 13, 9],
+            [10, 12, 6],
+            [5, 7, 13],
+            [2, 1, 10],
+            [11, 12, 6],
+            [12, 9, 10],
+            [8, 0, 9],
+            [5, 3, 4],
+            [2, 8, 10],
+            [11, 10, 2],
+            [9, 5, 12],
+            [11, 1, 15],
+            [14, 2, 3],
+            [11, 1, 15],
+            [9, 5, 12],
+            [11, 10, 2],
+            [2, 8, 10],
+            [5, 3, 4],
+            [8, 0, 9],
+            [12, 9, 10],
+            [11, 12, 6],
+            [2, 1, 10],
+            [1, 15, 9],
+            [5, 7, 13],
+            [10, 12, 6],
+            [14, 13, 9],
+            [1, 5, 9],
+            [4, 9, 14],
+            [14, 7, 10],
+            [10, 5, 3],
+            [5, 1, 11],
+            [8, 12, 7],
+            [7, 10, 1],
+            [13, 6, 5],
+        ];
 
         let mut c = CircuitSeq { gates };
         let mut subcircuit_gates = vec![1, 4, 5, 6];
@@ -1627,7 +1780,8 @@ mod tests {
             if c.gates[start + i] != c.gates[gate_idx] {
                 println!(
                     "Mismatch at position {} (circuit idx {})",
-                    start + i, gate_idx
+                    start + i,
+                    gate_idx
                 );
                 all_match = false;
             }
@@ -1640,9 +1794,16 @@ mod tests {
 
     #[test]
     fn verify_butterfly() {
-        let original = CircuitSeq::from_string("692;8c6;fd7;c6f;dc2;1ad;7c2;b8f;a3c;d10;f28;f91;941;8b2;82b;4fc;a78;e8b;780;142;6cb;8a6;e8c;fd7;07e;086;ea7;e74;549;ec3;");
-        let new = CircuitSeq::from_string("f62;6ab;8b5;98f;6d4;4ba;5b1;13f;19e;db6;f9d;74d;172;97d;640;145;97d;172;19e;f9d;13f;6ba;145;5b1;74d;640;4ba;6ba;db6;6ab;6d4;98f;8b5;8e3;f62;8b5;f62;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;6ba;640;6ba;145;19e;13f;98f;145;5b1;8b5;74d;640;4ba;8b5;db6;6ab;6d4;f62;0ce;f62;98f;5b1;6ab;6d4;db6;4ba;74d;640;145;13f;19e;f9d;172;97d;145;97d;172;19e;f9d;13f;5b1;98f;8b5;6ba;640;74d;4ba;6ba;db6;6ab;6d4;f62;601;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;19e;13f;5b1;98f;8b5;6ba;640;74d;4ba;db6;6ab;6d4;f62;8fb;f62;8b5;98f;5b1;13f;19e;6d4;6ab;db6;4ba;640;74d;145;19e;13f;98f;145;5b1;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;8b5;98f;94a;5b1;13f;19e;6ab;6d4;4ba;145;db6;6ba;f9d;74d;172;97d;640;145;97d;172;74d;f9d;19e;13f;5b1;98f;8b5;640;4ba;6ba;db6;6d4;6ab;f08;f62;8b5;f62;98f;5b1;6ab;6d4;13f;4ba;db6;74d;f9d;19e;172;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;8b5;640;74d;6ba;640;6ba;db6;4ba;6ab;6d4;8b5;98f;5b1;13f;19e;6d4;6ab;04e;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;98f;145;5b1;8b5;74d;db6;6ab;4ba;6d4;ab6;f62;8b5;f62;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;74d;640;6ba;4ba;db6;6ab;6d4;f62;fa2;f62;8b5;5b1;13f;98f;19e;6ab;6d4;4ba;db6;74d;640;6ba;f9d;172;97d;145;640;145;97d;172;19e;f9d;13f;5b1;74d;4ba;6ba;db6;6d4;6ab;98f;8b5;f62;976;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;f9d;172;97d;640;97d;172;74d;f9d;19e;13f;98f;5b1;4ba;6ba;db6;6ab;6d4;f62;1a4;8b5;f62;8b5;98f;6ab;6d4;5b1;4ba;145;db6;6ba;145;74d;19e;13f;f9d;19e;f9d;74d;4ba;6ba;db6;6ab;6d4;13f;5b1;98f;8b5;eca;f62;8b5;f62;6d4;6ab;db6;98f;5b1;4ba;13f;19e;74d;19e;13f;98f;5b1;8b5;640;74d;640;6ba;4ba;6ba;db6;6ab;6d4;ab6;f62;8b5;5b1;f62;6d4;4ba;6ab;db6;640;74d;6ba;640;6ba;145;13f;98f;19e;f9d;172;97d;145;172;97d;19e;f9d;13f;5b1;98f;8b5;74d;db6;6ab;4ba;6d4;f62;2e5;8b5;f62;98f;5b1;6ab;6d4;4ba;db6;74d;6ba;640;13f;f9d;19e;74d;19e;f9d;6ba;13f;5b1;98f;8b5;640;db6;6ab;4ba;6d4;f62;8fa;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;145;5b1;98f;8b5;74d;4ba;db6;6ab;6d4;8b5;98f;5b1;13f;19e;06a;6d4;6ab;db6;4ba;74d;6ba;640;6ba;f9d;640;19e;f9d;13f;5b1;74d;4ba;db6;6ab;6d4;98f;f62;137;f62;6d4;4ba;6ab;db6;640;6ba;74d;6ba;98f;5b1;145;172;640;145;13f;f9d;19e;172;19e;f9d;13f;5b1;98f;74d;4ba;db6;6ab;6d4;e17;98f;5b1;13f;19e;6ab;6d4;4ba;db6;f9d;6ba;74d;640;f9d;19e;13f;98f;5b1;8b5;74d;640;4ba;6ba;db6;6d4;6ab;f62;38d;f62;8b5;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;74d;6ba;145;13f;5b1;98f;8b5;6ba;db6;4ba;6ab;6d4;b48;8b5;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;97d;172;97d;172;74d;f9d;19e;13f;98f;5b1;8b5;640;6ba;4ba;db6;6d4;6ab;f62;a6f;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;640;6ba;74d;145;f9d;6ba;172;97d;640;145;172;97d;f9d;19e;13f;5b1;74d;4ba;db6;6d4;6ab;98f;fd5;6ab;6d4;db6;6ba;4ba;640;74d;6ba;98f;5b1;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;640;74d;db6;6ab;4ba;6d4;8c7;f62;8b5;f62;98f;5b1;13f;19e;6d4;4ba;6ab;db6;f9d;74d;172;19e;f9d;13f;98f;172;5b1;85b;8b5;640;6ba;640;6ba;74d;4ba;db6;6ab;6d4;8b5;5b1;98f;13f;19e;6ab;6d4;4ba;db6;74d;640;19e;13f;5b1;98f;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;f62;192;f62;8b5;98f;5b1;19e;6ab;6d4;4ba;db6;6ba;640;6ba;74d;13f;f9d;97d;172;97d;172;19e;f9d;98f;13f;5b1;74d;640;db6;8b5;6ab;4ba;6d4;f62;280;f62;8b5;98f;5b1;13f;19e;6d4;4ba;145;6ab;db6;6ba;74d;640;f9d;172;97d;172;97d;f9d;19e;74d;13f;98f;145;5b1;8b5;640;6ba;db6;4ba;6d4;0d8;6ab;8b5;6d4;6ab;98f;5b1;13f;db6;4ba;640;6ba;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;74d;640;6ba;db6;6ab;4ba;6d4;f62;6ad;f62;5b1;6ab;6d4;db6;4ba;640;145;13f;98f;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;5b1;98f;8b5;6ba;74d;640;6ba;db6;6ab;4ba;6d4;f62;6e4;8b5;f62;5b1;98f;6d4;6ab;db6;6ba;4ba;640;74d;640;13f;f9d;6ba;19e;172;97d;145;172;97d;19e;f9d;13f;98f;145;5b1;74d;4ba;db6;6d4;6ab;f62;abf;f62;6d4;6ab;db6;4ba;640;98f;5b1;19e;74d;640;172;13f;f9d;172;74d;f9d;db6;19e;13f;5b1;4ba;6d4;98f;8b5;6ab;f62;");
-        println!("Are they equal? {}", original.permutation(16) == new.permutation(16));
+        let original = CircuitSeq::from_string(
+            "692;8c6;fd7;c6f;dc2;1ad;7c2;b8f;a3c;d10;f28;f91;941;8b2;82b;4fc;a78;e8b;780;142;6cb;8a6;e8c;fd7;07e;086;ea7;e74;549;ec3;",
+        );
+        let new = CircuitSeq::from_string(
+            "f62;6ab;8b5;98f;6d4;4ba;5b1;13f;19e;db6;f9d;74d;172;97d;640;145;97d;172;19e;f9d;13f;6ba;145;5b1;74d;640;4ba;6ba;db6;6ab;6d4;98f;8b5;8e3;f62;8b5;f62;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;6ba;640;6ba;145;19e;13f;98f;145;5b1;8b5;74d;640;4ba;8b5;db6;6ab;6d4;f62;0ce;f62;98f;5b1;6ab;6d4;db6;4ba;74d;640;145;13f;19e;f9d;172;97d;145;97d;172;19e;f9d;13f;5b1;98f;8b5;6ba;640;74d;4ba;6ba;db6;6ab;6d4;f62;601;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;19e;13f;5b1;98f;8b5;6ba;640;74d;4ba;db6;6ab;6d4;f62;8fb;f62;8b5;98f;5b1;13f;19e;6d4;6ab;db6;4ba;640;74d;145;19e;13f;98f;145;5b1;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;8b5;98f;94a;5b1;13f;19e;6ab;6d4;4ba;145;db6;6ba;f9d;74d;172;97d;640;145;97d;172;74d;f9d;19e;13f;5b1;98f;8b5;640;4ba;6ba;db6;6d4;6ab;f08;f62;8b5;f62;98f;5b1;6ab;6d4;13f;4ba;db6;74d;f9d;19e;172;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;8b5;640;74d;6ba;640;6ba;db6;4ba;6ab;6d4;8b5;98f;5b1;13f;19e;6d4;6ab;04e;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;98f;145;5b1;8b5;74d;db6;6ab;4ba;6d4;ab6;f62;8b5;f62;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;74d;640;6ba;4ba;db6;6ab;6d4;f62;fa2;f62;8b5;5b1;13f;98f;19e;6ab;6d4;4ba;db6;74d;640;6ba;f9d;172;97d;145;640;145;97d;172;19e;f9d;13f;5b1;74d;4ba;6ba;db6;6d4;6ab;98f;8b5;f62;976;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;f9d;172;97d;640;97d;172;74d;f9d;19e;13f;98f;5b1;4ba;6ba;db6;6ab;6d4;f62;1a4;8b5;f62;8b5;98f;6ab;6d4;5b1;4ba;145;db6;6ba;145;74d;19e;13f;f9d;19e;f9d;74d;4ba;6ba;db6;6ab;6d4;13f;5b1;98f;8b5;eca;f62;8b5;f62;6d4;6ab;db6;98f;5b1;4ba;13f;19e;74d;19e;13f;98f;5b1;8b5;640;74d;640;6ba;4ba;6ba;db6;6ab;6d4;ab6;f62;8b5;5b1;f62;6d4;4ba;6ab;db6;640;74d;6ba;640;6ba;145;13f;98f;19e;f9d;172;97d;145;172;97d;19e;f9d;13f;5b1;98f;8b5;74d;db6;6ab;4ba;6d4;f62;2e5;8b5;f62;98f;5b1;6ab;6d4;4ba;db6;74d;6ba;640;13f;f9d;19e;74d;19e;f9d;6ba;13f;5b1;98f;8b5;640;db6;6ab;4ba;6d4;f62;8fa;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;145;5b1;98f;8b5;74d;4ba;db6;6ab;6d4;8b5;98f;5b1;13f;19e;06a;6d4;6ab;db6;4ba;74d;6ba;640;6ba;f9d;640;19e;f9d;13f;5b1;74d;4ba;db6;6ab;6d4;98f;f62;137;f62;6d4;4ba;6ab;db6;640;6ba;74d;6ba;98f;5b1;145;172;640;145;13f;f9d;19e;172;19e;f9d;13f;5b1;98f;74d;4ba;db6;6ab;6d4;e17;98f;5b1;13f;19e;6ab;6d4;4ba;db6;f9d;6ba;74d;640;f9d;19e;13f;98f;5b1;8b5;74d;640;4ba;6ba;db6;6d4;6ab;f62;38d;f62;8b5;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;74d;6ba;145;13f;5b1;98f;8b5;6ba;db6;4ba;6ab;6d4;b48;8b5;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;97d;172;97d;172;74d;f9d;19e;13f;98f;5b1;8b5;640;6ba;4ba;db6;6d4;6ab;f62;a6f;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;640;6ba;74d;145;f9d;6ba;172;97d;640;145;172;97d;f9d;19e;13f;5b1;74d;4ba;db6;6d4;6ab;98f;fd5;6ab;6d4;db6;6ba;4ba;640;74d;6ba;98f;5b1;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;640;74d;db6;6ab;4ba;6d4;8c7;f62;8b5;f62;98f;5b1;13f;19e;6d4;4ba;6ab;db6;f9d;74d;172;19e;f9d;13f;98f;172;5b1;85b;8b5;640;6ba;640;6ba;74d;4ba;db6;6ab;6d4;8b5;5b1;98f;13f;19e;6ab;6d4;4ba;db6;74d;640;19e;13f;5b1;98f;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;f62;192;f62;8b5;98f;5b1;19e;6ab;6d4;4ba;db6;6ba;640;6ba;74d;13f;f9d;97d;172;97d;172;19e;f9d;98f;13f;5b1;74d;640;db6;8b5;6ab;4ba;6d4;f62;280;f62;8b5;98f;5b1;13f;19e;6d4;4ba;145;6ab;db6;6ba;74d;640;f9d;172;97d;172;97d;f9d;19e;74d;13f;98f;145;5b1;8b5;640;6ba;db6;4ba;6d4;0d8;6ab;8b5;6d4;6ab;98f;5b1;13f;db6;4ba;640;6ba;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;74d;640;6ba;db6;6ab;4ba;6d4;f62;6ad;f62;5b1;6ab;6d4;db6;4ba;640;145;13f;98f;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;5b1;98f;8b5;6ba;74d;640;6ba;db6;6ab;4ba;6d4;f62;6e4;8b5;f62;5b1;98f;6d4;6ab;db6;6ba;4ba;640;74d;640;13f;f9d;6ba;19e;172;97d;145;172;97d;19e;f9d;13f;98f;145;5b1;74d;4ba;db6;6d4;6ab;f62;abf;f62;6d4;6ab;db6;4ba;640;98f;5b1;19e;74d;640;172;13f;f9d;172;74d;f9d;db6;19e;13f;5b1;4ba;6d4;98f;8b5;6ab;f62;",
+        );
+        println!(
+            "Are they equal? {}",
+            original.permutation(16) == new.permutation(16)
+        );
     }
     use std::fs;
     #[test]
@@ -1663,17 +1824,16 @@ mod tests {
         // Compare (example)
         println!(
             "Are they equal? {}",
-            old.probably_equal(&new,64,100000).is_ok()
+            old.probably_equal(&new, 64, 100000).is_ok()
         );
     }
     use std::time::Instant;
     #[test]
     fn test_print() {
         let t = Instant::now();
-        let c = random_circuit(32,30);
-        let c1 = random_circuit(32,30);
-        c
-            .probably_equal(&c1, 32, 150_000)
+        let c = random_circuit(32, 30);
+        let c1 = random_circuit(32, 30);
+        c.probably_equal(&c1, 32, 150_000)
             .expect("The circuits differ somewhere!");
         println!("Time to compute permutation on 32 wires: {:?}", t.elapsed());
     }
@@ -1686,19 +1846,14 @@ mod tests {
         let c = CircuitSeq::from_string("123;123;");
 
         // Load circuitA from file
-        let contents = fs::read_to_string("circuitOOA_64.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuitOOA_64.txt").expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
         // Compare circuits
-        c
-            .probably_equal(&circuit_a, 64, 150_000)
+        c.probably_equal(&circuit_a, 64, 150_000)
             .expect("The circuits differ somewhere!");
 
-        println!(
-            "Time to compute permutation on 64 wires: {:?}",
-            t.elapsed()
-        );
+        println!("Time to compute permutation on 64 wires: {:?}", t.elapsed());
     }
 
     use std::io::{self, BufRead};
@@ -1808,7 +1963,7 @@ mod tests {
         let (c1, c2) = random_equivalent_circuits_until_found(n);
 
         if c1.probably_equal(&c2, n as usize, 1_000_000).is_ok() {
-           println!("Looks good");
+            println!("Looks good");
         }
         // Write c1 to c1.txt
         let mut file1 = File::create("c1.txt").expect("Failed to create c1.txt");
@@ -1827,7 +1982,7 @@ mod tests {
 
         let m = 100;
 
-        let c = random_circuit(n,m);
+        let c = random_circuit(n, m);
 
         let c_str = c.repr();
         File::create("circuit_random.txt")
@@ -1835,22 +1990,21 @@ mod tests {
             .expect("Failed to write test_random.txt");
     }
 
-    use crate::replace::replace::random_id;
+    use crate::algorithms::butterfly::replace::random_id;
 
     #[test]
     fn test_shooting() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let c1 = circuit_a.clone();
         let mut avg: f64 = 0.0;
-        for _ in 0..100{
+        for _ in 0..100 {
             shoot_random_gate(&mut circuit_a, 1_000_000);
             avg += heatmap(&c1, &circuit_a, 64, 500, false);
         }
-        println!("Shooting avg: {}", avg/100.0);
+        println!("Shooting avg: {}", avg / 100.0);
 
         let c_str = circuit_a.repr();
         File::create("circuit_shot.txt")
@@ -1862,8 +2016,7 @@ mod tests {
     fn test_walking() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let circuit_b = circuit_a.clone();
         // Proceed as before
@@ -1872,11 +2025,11 @@ mod tests {
         //     random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
         // }
         let mut avg: f64 = 0.0;
-        for _ in 0..100{
+        for _ in 0..100 {
             circuit_a = random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
             avg += heatmap(&circuit_b, &circuit_a, 64, 500, false);
         }
-        println!("Walking avg: {}", avg/100.0);
+        println!("Walking avg: {}", avg / 100.0);
 
         let c_str = circuit_a.repr();
         File::create("circuit_walked_no_skele.txt")
@@ -1893,7 +2046,13 @@ mod tests {
 
     use rand::prelude::SliceRandom;
 
-    pub fn heatmap(circuit_one: &CircuitSeq, circuit_two: &CircuitSeq, num_wires: usize, num_inputs: usize, flag: bool) -> f64 {
+    pub fn heatmap(
+        circuit_one: &CircuitSeq,
+        circuit_two: &CircuitSeq,
+        num_wires: usize,
+        num_inputs: usize,
+        flag: bool,
+    ) -> f64 {
         let mut circuit_one = circuit_one.clone();
         let mut circuit_two = circuit_two.clone();
         if flag {
@@ -1940,8 +2099,7 @@ mod tests {
     fn test_random_order() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let c1 = circuit_a.clone();
         let mut avg: f64 = 0.0;
@@ -1950,7 +2108,7 @@ mod tests {
             circuit_a.gates.shuffle(&mut rand::rng());
             avg += heatmap(&c1, &circuit_a, 64, 500, false);
         }
-        println!("randomized avg: {}", avg/100.0);
+        println!("randomized avg: {}", avg / 100.0);
         let c_str = circuit_a.repr();
         File::create("circuit_randomized.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
@@ -1959,8 +2117,7 @@ mod tests {
 
     #[test]
     fn test_skeleton() {
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
         let (_, skel) = create_skeleton(&circuit_a);
@@ -1998,7 +2155,10 @@ mod tests {
             );
         }
 
-        println!("Skeleton test passed: all {} nodes reachable from level 0", total_nodes);
+        println!(
+            "Skeleton test passed: all {} nodes reachable from level 0",
+            total_nodes
+        );
     }
 
     #[test]
@@ -2025,13 +2185,13 @@ mod tests {
     }
     #[test]
     fn benchmark_sql_vs_canonical() {
-        use std::time::{Duration, Instant};
-        use rusqlite::Connection;
         use itertools::Itertools; // for permutations
         use lmdb::Environment;
-        use std::path::Path;
         use lmdb::Transaction;
-        let conn = Connection::open("circuits.db").expect("Failed to open db");
+        use rusqlite::Connection;
+        use std::path::Path;
+        use std::time::{Duration, Instant};
+        let conn = Connection::open("db/circuits.db").expect("Failed to open db");
 
         let ns_and_ms = vec![(4, 6), (5, 5), (6, 4), (7, 3)];
 
@@ -2039,7 +2199,10 @@ mod tests {
         for &(n, max_m) in &ns_and_ms {
             for m in 1..=max_m {
                 let table = format!("n{}m{}", n, m);
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                let query_limit = format!(
+                    "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                    table
+                );
                 let stmt_limit = conn.prepare(&query_limit).unwrap();
                 stmts_prepared_limit1.insert((n, m), stmt_limit);
             }
@@ -2076,7 +2239,10 @@ mod tests {
                     let _ = circuit.permutation(n);
                     // SQL warmup if needed
                     let table = format!("n{}m{}", n, m);
-                    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                    let query_limit = format!(
+                        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                        table
+                    );
                     let _ = conn.prepare(&query_limit).ok();
                 }
             }
@@ -2109,14 +2275,19 @@ mod tests {
                     let start = Instant::now();
                     let perm = circuit.permutation(n);
                     let _ = get_canonical(&perm, bit_shuf);
-                    timer_canonical.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                    timer_canonical
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
 
                     // 2. SQL prepared LIMIT 1
                     if let Some(stmt) = stmts_prepared_limit1.get_mut(&(n, m)) {
                         let start = Instant::now();
-                        let _res: Option<(Vec<u8>, Vec<u8>)> =
-                            stmt.query_row([&circuit_blob], |row| Ok((row.get(0)?, row.get(1)?))).ok();
-                        timer_sql_prepared_limit1.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                        let _res: Option<(Vec<u8>, Vec<u8>)> = stmt
+                            .query_row([&circuit_blob], |row| Ok((row.get(0)?, row.get(1)?)))
+                            .ok();
+                        timer_sql_prepared_limit1
+                            .entry((n, m))
+                            .and_modify(|d| *d += start.elapsed());
                     }
 
                     // 3. LMDB lookup
@@ -2124,7 +2295,9 @@ mod tests {
                         let start = Instant::now();
                         let txn = env.begin_ro_txn().unwrap();
                         let _res = txn.get(db, &circuit_blob).ok();
-                        timer_lmdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                        timer_lmdb
+                            .entry((n, m))
+                            .and_modify(|d| *d += start.elapsed());
                     }
                 }
             }
@@ -2144,5 +2317,4 @@ mod tests {
             }
         }
     }
-
 }

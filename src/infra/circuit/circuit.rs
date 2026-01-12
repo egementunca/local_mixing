@@ -1,19 +1,19 @@
 //Basic implementation for circuit, gate, and permutations
-use rand::{seq::SliceRandom, Rng};
+use rand::{Rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::max as std_max,
-    collections::{HashSet, HashMap},
+    collections::{HashMap, HashSet},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Gate{
-    pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
+pub struct Gate {
+    pub pins: [usize; 3], //one active wire (0) and two control wires (1,2)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CircuitSeq {
-    pub gates: Vec<[u8;3]>, 
+    pub gates: Vec<[u8; 3]>,
 }
 
 //Permutations are all the possible outputs of a circuit
@@ -28,37 +28,32 @@ impl Gate {
         std_max(std_max(self.pins[0], self.pins[1]), self.pins[2])
     }
 
-    pub fn collides_index(gate: &[u8;3], other: &[u8;3]) -> bool {
-        gate[0] == other[1] 
-            || gate[0] == other[2]
-            || gate[1] == other[0] 
-            || gate[2] == other[0]
+    pub fn collides_index(gate: &[u8; 3], other: &[u8; 3]) -> bool {
+        gate[0] == other[1] || gate[0] == other[2] || gate[1] == other[0] || gate[2] == other[0]
     }
     //b is "larger"
-    pub fn ordered_index(gate: &[u8;3], other: &[u8;3]) -> bool {
+    pub fn ordered_index(gate: &[u8; 3], other: &[u8; 3]) -> bool {
         if gate[0] > other[0] {
-            return false
-        }
-        else if gate[0] == other[0]{
+            return false;
+        } else if gate[0] == other[0] {
             if gate[1] > other[1] {
-                return false
-            }
-            else if gate[1] == other[1] {
-                return gate[2] < other[2]
+                return false;
+            } else if gate[1] == other[1] {
+                return gate[2] < other[2];
             }
         }
         true
     }
 
     #[inline(always)]
-    pub fn evaluate_index(state: usize, gate: [u8;3]) -> usize {
+    pub fn evaluate_index(state: usize, gate: [u8; 3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
         state ^ (c1 | ((!c2) & 1)) << gate[0]
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u8;3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &Vec<[u8; 3]>) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -69,9 +64,7 @@ impl Gate {
 
 impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
-        Permutation {
-            data,
-        }
+        Permutation { data }
     }
     pub fn is_perm(&self) -> bool {
         let mut temp_perm = self.clone();
@@ -79,14 +72,12 @@ impl Permutation {
         temp_perm == Permutation::id_perm(self.data.len())
     }
 
-    pub fn id_perm(n:usize) -> Permutation {
+    pub fn id_perm(n: usize) -> Permutation {
         let temp_data = (0..n).collect();
-        Permutation { 
-            data: temp_data, 
-        }
+        Permutation { data: temp_data }
     }
 
-    pub fn rand_perm(n:usize) -> Permutation {
+    pub fn rand_perm(n: usize) -> Permutation {
         let mut p = Permutation::id_perm(n);
         let mut rng = rand::rng();
         p.data.shuffle(&mut rng);
@@ -95,10 +86,11 @@ impl Permutation {
 
     pub fn invert(&self) -> Permutation {
         let mut inv = vec![0; self.data.len()];
-        self.data.iter().enumerate().for_each(|(i, &val)| inv[val] = i);
-        Permutation { 
-            data: inv, 
-        }
+        self.data
+            .iter()
+            .enumerate()
+            .for_each(|(i, &val)| inv[val] = i);
+        Permutation { data: inv }
     }
 
     pub fn compose(&self, other: &Permutation) -> Permutation {
@@ -106,7 +98,8 @@ impl Permutation {
             panic!("Permutation length mismatch in compose");
         }
 
-        let data = self.data
+        let data = self
+            .data
             .iter()
             .enumerate()
             .map(|(i, &_x)| self.data[other.data[i]])
@@ -116,7 +109,8 @@ impl Permutation {
     }
 
     pub fn repr(&self) -> String {
-        self.data.iter()
+        self.data
+            .iter()
             .map(|&x| x.to_string())
             .collect::<Vec<_>>()
             .join(",")
@@ -209,9 +203,9 @@ impl Permutation {
 
 impl CircuitSeq {
     pub fn adjacent_id(&self) -> bool {
-        for i in 0..(self.gates.len()-1) {
-            if self.gates[i] == self.gates[i+1] {
-                return true
+        for i in 0..(self.gates.len() - 1) {
+            if self.gates[i] == self.gates[i + 1] {
+                return true;
             }
         }
         false
@@ -224,7 +218,7 @@ impl CircuitSeq {
     //small vec is okay since this is never called for num > 32
     pub fn permutation(&self, num_wires: usize) -> Permutation {
         let size = 1 << num_wires;
-        
+
         let mut output = vec![0; size];
 
         for input in 0..size {
@@ -244,7 +238,7 @@ impl CircuitSeq {
         blob
     }
 
-    pub fn repr_blob_gate(gate: &[u8;3]) -> Vec<u8> {
+    pub fn repr_blob_gate(gate: &[u8; 3]) -> Vec<u8> {
         let mut blob = Vec::with_capacity(3);
         blob.push(gate[0] as u8);
         blob.push(gate[1] as u8);
@@ -269,11 +263,7 @@ impl CircuitSeq {
         }
 
         if perm.data.len() != n {
-            panic!(
-                "wrong size perm! got {}, have {} wires",
-                perm.data.len(),
-                n
-            );
+            panic!("wrong size perm! got {}, have {} wires", perm.data.len(), n);
         }
 
         if !perm.is_perm() {
@@ -292,7 +282,7 @@ impl CircuitSeq {
     // Rewires the first gate to match `gate`, and adjusts remaining wires to a valid permutation
     pub fn rewire_first_gate(&mut self, target_gate: [u8; 3], num_wires: usize) {
         if self.gates.is_empty() {
-            return
+            return;
         }
 
         let first_gate = self.gates[0];
@@ -388,9 +378,9 @@ impl CircuitSeq {
     pub fn from_string(s: &str) -> Self {
         fn char_to_wire(c: char) -> u8 {
             match c {
-                '0'..='9' => c as u8 - b'0',          // 0-9
-                'a'..='z' => c as u8 - b'a' + 10,     // 10-35
-                'A'..='Z' => c as u8 - b'A' + 36,     // 36-61
+                '0'..='9' => c as u8 - b'0',      // 0-9
+                'a'..='z' => c as u8 - b'a' + 10, // 10-35
+                'A'..='Z' => c as u8 - b'A' + 36, // 36-61
                 '!' => 62,
                 '@' => 63,
                 '#' => 64,
@@ -455,9 +445,10 @@ impl CircuitSeq {
         let mut result = String::new();
 
         // Local character map (0-9, a-z, A-Z)
-        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
-            .chars()
-            .collect();
+        let wire_map_chars: Vec<char> =
+            "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
+                .chars()
+                .collect();
 
         // --- Pretty circuit diagram ---
         for wire in 0..num_wires {
@@ -465,7 +456,7 @@ impl CircuitSeq {
             for gate in &self.gates {
                 if gate[0] == wire as u8 {
                     result += "( )";
-                } else if gate[1] == wire as u8{
+                } else if gate[1] == wire as u8 {
                     result += "-●-";
                 } else if gate[2] == wire as u8 {
                     result += "-○-";
@@ -483,12 +474,7 @@ impl CircuitSeq {
             .iter()
             .map(|g| {
                 g.iter()
-                    .map(|&x| {
-                        wire_map_chars
-                            .get(x as usize)
-                            .unwrap_or(&'?')
-                            .to_string()
-                    })
+                    .map(|&x| wire_map_chars.get(x as usize).unwrap_or(&'?').to_string())
                     .collect::<String>()
                     + ";"
             })
@@ -504,6 +490,62 @@ impl CircuitSeq {
         let mut gates = self.gates.clone();
         gates.extend_from_slice(&other.gates);
         CircuitSeq { gates }
+    }
+
+    /// Returns the inverse circuit. Since gates are self-inverse (T ^= c1 | !c2),
+    /// the inverse is simply the gates in reverse order.
+    pub fn inverse(&self) -> CircuitSeq {
+        let mut gates = self.gates.clone();
+        gates.reverse();
+        CircuitSeq { gates }
+    }
+
+    /// Returns the number of gates in the circuit.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.gates.len()
+    }
+
+    /// Returns true if the circuit has no gates.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.gates.is_empty()
+    }
+
+    /// Insert a subcircuit at the given gate index.
+    /// Gates at and after `idx` are shifted right.
+    pub fn splice(&mut self, idx: usize, sub: &CircuitSeq) {
+        let idx = idx.min(self.gates.len());
+        for (i, &gate) in sub.gates.iter().enumerate() {
+            self.gates.insert(idx + i, gate);
+        }
+    }
+
+    /// Clone a slice of gates from index `a` to `b` (exclusive).
+    pub fn clone_slice(&self, a: usize, b: usize) -> CircuitSeq {
+        let a = a.min(self.gates.len());
+        let b = b.min(self.gates.len());
+        CircuitSeq {
+            gates: self.gates[a..b].to_vec(),
+        }
+    }
+
+    /// Apply a wire permutation: wire i becomes perm[i].
+    /// This relabels all gate wires according to the permutation.
+    pub fn apply_wire_permutation(&self, perm: &[usize]) -> CircuitSeq {
+        CircuitSeq {
+            gates: self
+                .gates
+                .iter()
+                .map(|g| {
+                    [
+                        perm[g[0] as usize] as u8,
+                        perm[g[1] as usize] as u8,
+                        perm[g[2] as usize] as u8,
+                    ]
+                })
+                .collect(),
+        }
     }
 
     pub fn used_wires(&self) -> Vec<u8> {
@@ -568,11 +610,13 @@ impl CircuitSeq {
         let new_gates: Vec<[u8; 3]> = subcircuit
             .gates
             .iter()
-            .map(|&[t, c1, c2]| [
-                *wire_map.get(&t).unwrap(),
-                *wire_map.get(&c1).unwrap(),
-                *wire_map.get(&c2).unwrap(),
-            ])
+            .map(|&[t, c1, c2]| {
+                [
+                    *wire_map.get(&t).unwrap(),
+                    *wire_map.get(&c1).unwrap(),
+                    *wire_map.get(&c2).unwrap(),
+                ]
+            })
             .collect();
 
         CircuitSeq { gates: new_gates }
@@ -591,7 +635,12 @@ impl CircuitSeq {
     }
 
     //no check on num_wires
-    pub fn probably_equal(&self, other_circuit: &Self, num_wires: usize, num_inputs: usize) -> Result<(), String> {
+    pub fn probably_equal(
+        &self,
+        other_circuit: &Self,
+        num_wires: usize,
+        num_inputs: usize,
+    ) -> Result<(), String> {
         let mut rng = rand::rng();
         let mask: usize = if num_wires < usize::BITS as usize {
             (1 << num_wires) - 1
@@ -602,7 +651,7 @@ impl CircuitSeq {
             // generate u64, then mask to get the lower num_wires bits
             let random_input = (rng.random::<u64>() as usize) & mask;
 
-            let self_output = Gate::evaluate_index_list( random_input, &self.gates);
+            let self_output = Gate::evaluate_index_list(random_input, &self.gates);
             let other_output = Gate::evaluate_index_list(random_input, &other_circuit.gates);
 
             if self_output != other_output {
@@ -616,12 +665,16 @@ impl CircuitSeq {
 
 pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for c in 0..n {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 gates.push([a, b, c]);
             }
         }
@@ -643,8 +696,7 @@ mod tests {
     use std::io::Write;
     #[test]
     pub fn test_canonicalization() {
-        let contents = fs::read_to_string("before_canon.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("before_canon.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
 
         // Proceed as before

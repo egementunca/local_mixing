@@ -1,4 +1,4 @@
-use crate::circuit::{Gate, Permutation, CircuitSeq};
+use crate::infra::circuit::{Gate, Permutation, CircuitSeq};
 use smallvec::SmallVec;
 use itertools::Itertools;
 use lru::LruCache;
