@@ -52,3 +52,5 @@ The only annealing-related path currently exposed in the CLI is the `local-mix` 
 
 - Quantum Circuit Unoptimization: https://arxiv.org/pdf/2311.03805
 - Reversible Circuit Rewriting with Simulated Annealing: https://msoeken.github.io/papers/2015_vlsisoc.pdf
+- A new method for reversible circuit synthesis using a Simulated Annealing algorithm and don’t-cares:https://link.springer.com/article/10.1007/s10825-020-01620-4
+- An ESOP-Based Reversible Circuit Synthesis Flow Using Simulated Annealing: https://www.semanticscholar.org/paper/An-ESOP-Based-Reversible-Circuit-Synthesis-Flow-Datta-Gokhale/53b33c2a5e3ee043f6b97bf76114b2d761df817c

@@ -177,6 +177,11 @@ These items are not fully implemented yet. They represent the intended next-stag
 ### 6.7 SAT repair extension
 - Replace a window with an approximate template, then synthesize a compensator circuit so the global function returns to identity.
 
+### 6.8 Skeleton-guided identity insertion (idea)
+- For the early phase of `butterfly`/`abutterfly`, add identity blocks using a local skeleton graph so insertions target sparse wire interactions instead of random gaps.
+- Heuristic sketch: build/update a wire-interaction graph over a sliding window, pick low-degree wires first, then choose identity templates whose active wires best fill the current gaps.
+- Expected effect: smarter identity insertions that increase coverage and reduce obvious structure before the main mixing/compression passes.
+
 ## 7. Agent Handoff Notes
 
 When extending the system:
