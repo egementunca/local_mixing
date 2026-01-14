@@ -21,6 +21,7 @@ Primary workflows:
 - `local_mixing/src/algorithms/butterfly/replace.rs`: identity generation, pair replacement, random gate replacement, convex subcircuit selection, expand/compress logic, SAT/LMDB compression, timers.
 - `local_mixing/src/algorithms/annealing/anneal.rs`: simulated annealing engine (moves, energy, stats). Not wired to the CLI yet.
 - `local_mixing/src/algorithms/annealing/local.rs`: local mixing MVP and local reducer; used by `local-mix` CLI.
+- `local_mixing/src/algorithms/annealing/README.md`: current status of the annealing engine and local-mix MVP.
 - `local_mixing/src/obfuscate/config.rs`: level presets and core config for the gadget-based pipeline.
 - `local_mixing/src/obfuscate/gadgets.rs`: commutator and identity gadget generators.
 - `local_mixing/src/obfuscate/mixer.rs`: random mixer generation, coverage and reducibility estimates.
@@ -157,6 +158,10 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 
 ### 4.5 Annealed obfuscator (annealing/anneal.rs)
 Defines a full simulated annealing engine (moves, energy functions, stats), but it is not wired to CLI entrypoints yet.
+- `energy_fast` uses adjacent-cancel rate + wire coverage; witness-hit scoring is not implemented.
+- `energy_slow` calls `reducer::reduce_budget` and uses compression ratio + coverage.
+- Template insertion uses synthetic identity pairs; `lmdb_path` is currently unused.
+- See `local_mixing/src/algorithms/annealing/README.md` for full status and gaps.
 
 ### 4.6 Obfuscate pipeline (obfuscate/*)
 - Segmentation -> gadget injection -> noise -> simple compression -> verification.

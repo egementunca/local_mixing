@@ -13,6 +13,7 @@ This folder contains the current documentation for the `local_mixing` codebase. 
 - `local_mixing/docs/SCHEMES.md`: high-level scheme comparison (butterfly vs annealing), updated to current status.
 - `local_mixing/docs/CHANGELOG.md`: summary of major changes since the original bin branch.
 - `local_mixing/docs/IDENTITY_GROWTH_PLAN.md`: plan for template-seeded identity growth and mixing.
+- `local_mixing/src/algorithms/annealing/README.md`: current status of the annealing engine and local-mix MVP.
 - `local_mixing/local_mix_notes_future_plan.md`: roadmap notes for reducer/obfuscator co-design.
 
 ## Legacy or historical references
