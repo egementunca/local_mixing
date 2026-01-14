@@ -1,86 +1,59 @@
 # Mixing Schemes Documentation
 
-This document details the two primary obfuscation schemes in the `local_mixing` framework: the **Original Scheme (Asymmetric Butterfly)** and the **New Scheme (Annealed Obfuscator)**.
+This document compares the primary obfuscation schemes in `local_mixing` and ties them to the current code layout.
+
+## 1. Scheme A: Asymmetric Butterfly (current production path)
+**Implementation**: `local_mixing/src/algorithms/butterfly/mixing.rs` and `local_mixing/src/algorithms/butterfly/replace.rs`
+
+### Core architecture (current code)
+1. **Local perturbation**: `shoot_random_gate` reorders gates via commuting moves.
+2. **Identity injection**: `replace_pairs` (and optional `random_gate_replacements`) substitutes adjacent pairs or single gates with identity templates.
+3. **Block wrapping**: each gate is wrapped with random `R`/`R_inv` blocks (chained in `abutterfly_big` to avoid symmetry).
+4. **Local compression**:
+   - Non-SAT path: `expand_big` + `compress_big` (perm-table LMDB/SQLite).
+   - SAT path: `compress_big_sat` or `compress_big_sat_lmdb` (TemplateDB + SAT fallback).
+5. **Merge + bookends**: blocks are merged, then global bookends are added and compressed in chunks.
+
+### Variants
+- `bbutterfly`: big butterfly with optional ancilla expansion and SAT compression.
+- `abbutterfly`: asymmetric chain of `R` blocks with TemplateDB/SAT compression.
+- `abbutterfly --bookendless`: delays or skips some bookend effects.
+
+### Status
+- **Active**: this is the default production pipeline in the CLI.
 
 ---
 
-## 1. Original Scheme: Asymmetric Butterfly
-**Implementation**: `algorithms/butterfly/mixing.rs` (originally `replace/mixing.rs`)
+## 2. Scheme B: Annealed Obfuscator (research path)
+**Implementation**: `local_mixing/src/algorithms/annealing/anneal.rs` and `local_mixing/src/algorithms/annealing/local.rs`
 
-The **Butterfly** scheme is a hierarchical, block-based approach designed to obfuscate large circuits by recursively wrapping them in random "noise" layers and compressing the result.
+### Core architecture
+- Treats obfuscation as an optimization problem: find `C'` equivalent to `C` that is hard for a reducer to compress.
+- Uses Metropolis-style acceptance with an energy function (adjacent cancels, witness hits, coverage, reducer compression).
+- Move set (from `local.rs`): template insertion, commuting swaps, patch-pair insertions.
 
-### Core Architecture
-1.  **Splitting**: The input circuit $C$ is divided into $k$ parallel blocks $B_1, \dots, B_k$.
-2.  **Wrapping (The "Butterfly" Step)**:
-    Each block $B_i$ is wrapped with a random reversible circuit $R_i$ and its inverse $R_i^{-1}$ (or $R_{i+1}$ for chaining).
-    $$ B'_i \leftarrow R_i^{-1} \cdot B_i \cdot R_{i+1} $$
-    The boundaries are handled such that the $R$'s telescope (cancel out) when blocks are concatenated, preserving the global function $F(C)$.
-
-3.  **Local Compression**:
-    Each wrapped block $B'_i$ acts as a "window". The system computes its canonical signature and queries the **Rainbow Table**.
-    *   If a smaller equivalent $S_i \equiv B'_i$ is found, $B'_i$ is replaced by $S_i$.
-    *   Crucially, since $R_i$ is random, $B'_i$ likely has no trivial identity pattern, but *inside* it lurks the original logic $B_i$. The compressor tries to "crunch" the combined entropy.
-
-4.  **Merging**:
-    Compressed blocks are merged pairwise. The process repeats hierarchically until a single circuit remains.
-
-### Use Case
-*   **Status**: Legacy / Baseline.
-*   **Pros**: Highly parallelizable; good for bulk "entropy injection".
-*   **Cons**: Can be brittle; adjacent $R \cdot R^{-1}$ pairs might be easily detected if simple compression is run without context.
+### Status
+- **Partially integrated**: the annealing engine exists, but there is no CLI subcommand wired to run it yet.
+- `local-mix` exposes the move set and a lightweight reducer for quick experiments.
 
 ---
 
-## 2. New Scheme: Annealed Obfuscator
-**Implementation**: `algorithms/annealing/anneal.rs` (originally `obfuscation/anneal.rs`)
+## 3. Additional pipeline: Gadget-based obfuscator
+**Implementation**: `local_mixing/src/obfuscate/*`
 
-The **Annealed Obfuscator** treats obfuscation as an optimization problem: *Find the circuit $C'$ such that $C' \equiv C$ and $Cost(Attacker(C'))$ is maximized.*
-
-### Core Architecture
-It uses **Simulated Annealing** (Metropolis-Hastings algorithm) to navigate the space of equivalent circuits.
-
-#### A. The Energy Function (Adversarial Score)
-We define the "Energy" $E(C)$ of a circuit as its resistance to reduction.
-$$ E(C) \approx \text{Steps\_To\_Reduce}(C) - \text{Size\_Reduction}(C) $$
-*   A "High Energy" circuit is one that the `Reducer` (attacker) struggles to simplify.
-*   The `Reducer` (Attacker Model) runs fast, local reduction passes (Cancellation, Template Matching).
-
-#### B. The Moves (`algorithms/annealing/local.rs`)
-The annealer proposes stochastic updates to the circuit:
-1.  **Move A (Template Insertion)**:
-    *   Pick a random position $i$.
-    *   Insert an Identity Template $T = P \cdot P^{-1}$.
-    *   *Adversarial Goal*: Choose $P$ such that it "tangles" with neighbors (anti-commutes), preventing trivial removal.
-2.  **Move B (Commuting Swaps)**:
-    *   Identify adjacent gates $g_i, g_{i+1}$ that commute ($g_i \cdot g_{i+1} = g_{i+1} \cdot g_i$).
-    *   Swap them.
-    *   *Goal*: Diffuse gates physically to hide their logical relationships.
-3.  **Move D (Patch Pairs)**:
-    *   Insert $R \dots R^{-1}$ where the two halves are separated by distance $d$.
-    *   *Goal*: Create non-local identities that local window reducers cannot see.
-
-### Process Flow
-1.  Start with circuit $C_{current}$.
-2.  Propose $C_{proposal} = \text{Move}(C_{current})$.
-3.  Calculate $\Delta E = E(C_{proposal}) - E(C_{current})$.
-4.  **Acceptance**:
-    *   If $\Delta E > 0$ (Obfuscation improved): Accept.
-    *   If $\Delta E \le 0$: Accept with probability $e^{\Delta E / T}$, where $T$ is the "Temperature".
-5.  Cool down $T$ over time.
-
-### Use Case
-*   **Status**: Active Research.
-*   **Pros**: Produces "Sticky" noise; targets specific weaknesses of the reduction tool.
-*   **Cons**: Slower (requires running the reducer in the loop).
+- Segmentation + commutator gadget injection + noise to target overhead.
+- Conjugation and wire permutation are present but disabled to preserve semantics without wrapping.
+- Used by the `obfuscate` CLI subcommand.
 
 ---
 
-## 3. Comparison
+## 4. Comparison (current reality)
 
-| Feature | Butterfly (Original) | Annealing (New) |
-| :--- | :--- | :--- |
-| **Approach** | Constructive (Wrap & Squash) | Search-based (Optimization) |
-| **Randomness** | Global structure injection | derived from Local Moves |
-| **Guidance** | Unguided (Random R) | Guided (Energy Function) |
-| **Parallelism** | High (Block-based) | Low (Sequential MCMC) |
-| **Output** | "Crunchy" (Compressed but messy) | "Tangled" (Structurally resistant) |
+| Feature | Asymmetric Butterfly | Annealing | Gadget Obfuscator |
+| --- | --- | --- | --- |
+| **Approach** | Constructive (wrap/replace/compress) | Search-based (MCMC) | Constructive (gadgets + noise) |
+| **Guidance** | Heuristic + template DB | Energy-driven | Heuristic |
+| **Parallelism** | High (block-level) | Low (sequential) | Medium |
+| **DB usage** | Perm tables + TemplateDB | Optional | None |
+| **CLI status** | Active | Not wired | Active |
+

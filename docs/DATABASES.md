@@ -1,6 +1,12 @@
 # Local Mixing Data Infrastructure
 
-This document details the database schemas and storage formats used by the `local_mixing` circuit obfuscation framework. The system uses a hybrid storage model: **SQLite** for structure-aware enumeration and **LMDB** for fast template lookups.
+This document details the database schemas and storage formats used by the `local_mixing` circuit obfuscation framework.
+
+Note: there are **two different LMDB schemas** in this repo with overlapping names:
+- `./db` (local_mixing perm tables): used for perm-based lookups and identity construction.
+- `collection.lmdb` (sat_revsynth TemplateDB): used for template hash lookups in LMDB-first SAT compression.
+
+The compressors use these differently; see Section 4 for the mapping.
 
 ## 1. SQLite Database (`circuits.db`)
 
@@ -35,11 +41,48 @@ CREATE INDEX IF NOT EXISTS idx_perm_{table} ON {table} (perm);
 
 ---
 
-## 2. LMDB Database (`collection.lmdb`)
+## 2. LMDB (local_mixing perm tables, `./db`)
 
-**Purpose**: Stores "Identity Templates" and optimized circuits. This is a Key-Value store optimized for extremely fast random reads (millions/sec) during the obfuscation process.
+**Purpose**: Fast perm-based lookups for compression and identity construction. These tables are **not** the same as the TemplateDB used by SAT compression.
 
-**Location**: `./db` or specified via `--lmdb-db`.
+**Location**: `./db` (hard-coded in current CLI paths). The `ObfuscationConfig.lmdb_path` field exists but is not wired to the CLI yet.
+
+### 2.1 Tables
+
+#### `perm_tables_n{N}`
+- Key: `perm` (length `2^N` bytes).
+- Value: `bincode` list of gate counts (`m`) that share the same permutation.
+- Built by: `local_mixing_bin lmdbcounts` or `save_perm_tables_to_lmdb`.
+- Used by: `random_canonical_id` (identity construction).
+
+#### `n{N}m{M}`
+- Key: `perm || circuit` (perm bytes + circuit blob).
+- Value: empty.
+- Built by: `sql_to_lmdb` (from SQLite).
+- Used by: `compress_lmdb` and `expand_lmdb` via prefix searches; `random_perm_lmdb` returns the circuit suffix.
+
+#### `n{N}m{M}perms`
+- Key: `circuit` blob.
+- Value: `perm || shuf` (perm bytes + shuffle bytes).
+- Built by: `sql_to_lmdb_perms` (from SQLite).
+- Used by: `compress_lmdb` and `expand_lmdb` to map a subcircuit to canonical `perm` and `shuf` quickly.
+
+### 2.2 Generation
+- SQLite -> LMDB: `local_mixing_bin lmdb -n N -m M` calls `sql_to_lmdb`.
+- Perm tables: `local_mixing_bin lmdbcounts` builds `perm_tables_n{N}`.
+- JSON import: `local_mixing/src/bin/import_rainbow.rs` can import exported JSON into these tables.
+
+### 2.3 Usage notes
+- These tables live in `./db` and are opened directly in `main.rs` (`bbutterfly`, `abbutterfly`, `compress`, `local-mix`).
+- The CLI flag `--lmdb-db` does **not** point to these tables; it points to the TemplateDB schema below.
+
+---
+
+## 3. LMDB TemplateDB (`collection.lmdb`)
+
+**Purpose**: Stores identity templates and optimized circuits by canonical hash. This is a Key-Value store optimized for fast random reads.
+
+**Location**: typically `data/collection.lmdb` (built by `sat_revsynth`). Provided to `abbutterfly` via `--lmdb-db`.
 **Manager**: `lmdb` crate.
 **Map Size**: Configured typically to 10GB - 700GB depending on command (see `main.rs`).
 
@@ -79,7 +122,19 @@ During `abbutterfly` (obfuscation):
 3.  It queries LMDB: `get_smaller_equivalent(width, current_len, hash)`.
 4.  If a smaller record exists (e.g., length 6 vs current length 10), it replaces the window.
 
-## 3. Serialization Details
+## 4. Compressor/database mapping (current code)
+
+- `compress` / `compress_exhaust`: SQLite `circuits.db` tables `n{N}m{M}`.
+- `compress_lmdb`: local_mixing LMDB `n{N}m{M}` for replacements; uses `n{N}m{M}perms` or SQLite for perm/shuf (special cases `n7m4`, `n6m5`).
+- `expand_lmdb`: same DB usage as `compress_lmdb`.
+- `compress_big`: currently does **not** call `compress_lmdb` (subcircuit path is commented out); only local dedup is applied.
+- `compress_big_ancillas`: uses `compress_lmdb` (local_mixing LMDB).
+- `compress_big_sat`: SAT only (no DB).
+- `compress_big_sat_lmdb`: TemplateDB `templates_by_hash` (collection.lmdb) with SAT fallback.
+- `random_canonical_id`: local_mixing LMDB `perm_tables_n{N}` + `n{N}m{M}`.
+- `replace_pairs`: uses TemplateDB when `--lmdb-db` is provided; otherwise falls back to `random_canonical_id` (local_mixing LMDB).
+
+## 5. Serialization Details
 
 ### Circuit Blob (SQLite & LMDB)
 Circuits are stored as raw byte arrays of gates:
@@ -87,7 +142,7 @@ Circuits are stored as raw byte arrays of gates:
 -   A 10-gate circuit is a `BLOB` of 30 bytes.
 -   Wire indices are `u8` (0-255).
 
-### Canonical Hash
--   Computed in `src/rainbow/canonical.rs`.
--   Represents the lexicographically smallest truth table reachable by permuting wires.
--   Ensures that structurally different but functionally identical circuits map to the same Key.
+### Canonical Hash (TemplateDB)
+-   For `collection.lmdb`, the `canonical_hash` is a function hash used by sat_revsynth.
+-   Local lookups compute it in `local_mixing/src/optimize/compress_sat.rs::compute_canonical_hash` (truth table hash).
+-   This is **separate** from `infra/rainbow/canonical.rs`, which canonicalizes permutations for the local_mixing perm tables.

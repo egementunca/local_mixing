@@ -1,2 +1,4 @@
 # local_mixing
-New local_mixing ideas for obfuscated circuits
+
+Primary docs:
+- `local_mixing/docs/README.md`

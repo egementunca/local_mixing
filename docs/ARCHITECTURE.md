@@ -1,5 +1,7 @@
 # Local Mixing System Architecture
 
+Note: This document provides a high-level architecture view. Paths have been updated to match the current layout (`src/algorithms/*`, `src/infra/*`). For the full module map and database mapping, see `local_mixing/docs/MASTER_README.md`.
+
 ## 1. System Overview
 
 `local_mixing` is a high-performance Rust framework for **Reversible Circuit Obfuscation**. Its primary goal is to take a reversible circuit (e.g., a quantum oracle or classical reversible function) and transform it into a functionally equivalent but structurally complex form that resists automated simplification (reduction).
@@ -14,16 +16,18 @@ graph TD
     User[User / CLI] -->|Input Circuit| Mixer[Mixing Engine]
     Mixer -->|Segments| Butterfly[Butterfly Algorithm]
     
-    subgraph "Data Layer"
+subgraph "Data Layer"
         SQLite[(SQLite: circuits.db)]
-        LMDB[(LMDB: collection.lmdb)]
+        LMDBPerm[(LMDB: ./db perm tables)]
+        LMDBTpl[(LMDB: collection.lmdb)]
     end
     
     Butterfly -->|Sub-windows| Canonicalizer[Canonicalization Engine]
-    Canonicalizer -->|Hash| LMDB
+    Canonicalizer -->|Perm tables| LMDBPerm
     Canonicalizer -->|Permutation| SQLite
     
-    LMDB -->|Optimized Template| Butterfly
+    LMDBTpl -->|Optimized Template| Butterfly
+    LMDBPerm -->|Equivalent Circuit| Butterfly
     SQLite -->|Equivalent Circuit| Butterfly
     
     Butterfly -->|Merged Blocks| Final[Obfuscated Circuit]
@@ -41,7 +45,7 @@ graph TD
 
 ## 2. Core Modules
 
-### A. The Mixing Engine (`src/replace/mixing.rs`)
+### A. The Mixing Engine (`src/algorithms/butterfly/mixing.rs`)
 The heart of the system. It implements the **Asymmetric Butterfly** algorithm (`abbutterfly`).
 
 **Algorithm Flow:**
@@ -49,11 +53,11 @@ The heart of the system. It implements the **Asymmetric Butterfly** algorithm (`
 2.  **Wrapping**: Each block $B_i$ is wrapped in a random reversible circuit $R_i$ and its inverse:
     $$ B'_i = R_i^{-1} \cdot B_i \cdot R_{i+1} $$
     *(Note: The boundaries are handled such that $R$ terms cancel out globally, preserving the function).*
-3.  **Compression**: Each $B'_i$ is compressed using the **Template DB**. Since $R_i$ is random, $B'_i$ looks like noise, but the weak "identity" patterns inside $B_i$ are hidden.
+3.  **Compression**: Each $B'_i$ is compressed using the TemplateDB or perm-table LMDB (depending on SAT mode and configuration). Since $R_i$ is random, $B'_i$ looks like noise, but the weak "identity" patterns inside $B_i$ are hidden.
 4.  **Merging**: Compressed blocks are merged hierarchically.
 5.  **Iteration**: The process repeats until the circuit size stabilizes.
 
-### B. Local Mixing (`src/local.rs`)
+### B. Local Mixing (`src/algorithms/annealing/local.rs`)
 A stochastic, move-based approach used for smaller-scale mixing or "Simulated Annealing".
 
 **Moves:**
@@ -65,9 +69,9 @@ A stochastic, move-based approach used for smaller-scale mixing or "Simulated An
 Acts as the "Attacker Model". It tries to undo the mixing by finding and removing redundancies.
 -   **Pass 1**: Adjacent Cancellation ($G \cdot G \to I$).
 -   **Pass 2**: Commuting Swaps (to expose adjacent cancellations).
--   **Pass 3**: Template Matching (Sliding window check against known identities).
+-   **Pass 3**: Template Matching (planned; currently a TODO in this reducer).
 
-### D. Canonicalization (`src/rainbow/`)
+### D. Canonicalization (`src/infra/rainbow/`)
 Crucial for the "Rainbow Table" lookup.
 -   **Problem**: Circuits $A$ and $B$ may look different but be identical ($A \equiv B$).
 -   **Solution**: We define a **Canonical Form** $\mathcal{C}(C)$.
@@ -93,7 +97,7 @@ A structured pipeline for applying high-level obfuscation passes.
 
 ---
 
-## 5. Verification & Alignment (`src/alignment/`)
+## 5. Verification & Alignment (`src/analysis/alignment/`)
 Tools to verify that the obfuscated circuit is "structurally similar" to the original in terms of logical flow, but "locally different".
 
 -   **DTW (Dynamic Time Warping)**: Aligns the "Timeline" of the original circuit with the obfuscated one to visualize where entropy was added.
