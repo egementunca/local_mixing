@@ -56,6 +56,12 @@ pub struct ObfuscationConfig {
     /// Window sizes to scan for identity removal
     pub reducer_window_sizes: Vec<usize>,
 
+    // --- Replacements ---
+    /// Enable pair gate replacements
+    pub pair_replacement_mode: bool,
+    /// Enable equal-length replacements (blurring)
+    pub equal_replacement_mode: bool,
+
     // --- System ---
     /// Path to LMDB database directory
     pub lmdb_path: PathBuf,
@@ -84,6 +90,8 @@ impl Default for ObfuscationConfig {
             chunk_split_base: 1500,
             reducer_active_wire_limit: 6,
             reducer_window_sizes: vec![4, 6, 8, 10, 12, 16],
+            pair_replacement_mode: true,
+            equal_replacement_mode: true,
             lmdb_path: PathBuf::from("db"),
         }
     }

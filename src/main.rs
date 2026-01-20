@@ -16,8 +16,9 @@ use local_mixing::{
         },
         replace::random_canonical_id,
     },
+    algorithms::identity_growth::{IdentityGrowthConfig, TemplateSource, grow_identity},
     config::ObfuscationConfig,
-    infra::circuit::CircuitSeq,
+    infra::circuit::{CircuitSeq, Gate},
     infra::random::random_data::{
         build_from_sql, build_initial_table, generate_heatmap_data, main_random, random_circuit,
     },
@@ -219,6 +220,18 @@ fn main() {
                     .help("Path to LMDB database for templates (enables fast lookup)"),
             )
             .arg(
+                Arg::new("no-pairs")
+                    .long("no-pairs")
+                    .action(ArgAction::SetTrue)
+                    .help("Disable pair replacements"),
+            )
+            .arg(
+                Arg::new("no-equal")
+                    .long("no-equal")
+                    .action(ArgAction::SetTrue)
+                    .help("Disable equal-length replacements (blurring)"),
+            )
+            .arg(
                 Arg::new("config")
                     .long("config")
                     .value_parser(clap::value_parser!(String))
@@ -340,6 +353,40 @@ fn main() {
                         .long("raw")
                         .help("Do not canonicalize circuits before processing (default: canonicalize)")
                         .action(ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
+            Command::new("compare")
+                .about("Compare two circuits for functional equivalence")
+                .arg(
+                    Arg::new("c1")
+                        .long("c1")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to first circuit"),
+                )
+                .arg(
+                    Arg::new("c2")
+                        .long("c2")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to second circuit"),
+                )
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("num_wires")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires"),
+                )
+                .arg(
+                    Arg::new("inputs")
+                        .short('i')
+                        .long("inputs")
+                        .default_value("1000")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of inputs to test"),
                 ),
         )
         .subcommand(
@@ -524,6 +571,116 @@ fn main() {
                         .default_value("100")
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of mixing rounds"),
+                )
+        )
+        .subcommand(
+            Command::new("grow-identity")
+                .about("Grow a large identity circuit from small templates")
+                .arg(
+                    Arg::new("wires")
+                        .short('w')
+                        .long("wires")
+                        .default_value("32")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Target number of wires (default: 32)"),
+                )
+                .arg(
+                    Arg::new("rounds")
+                        .short('r')
+                        .long("rounds")
+                        .default_value("5")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of growth rounds"),
+                )
+                .arg(
+                    Arg::new("placements")
+                        .short('p')
+                        .long("placements")
+                        .default_value("10")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Template placements per round"),
+                )
+                .arg(
+                    Arg::new("diffusion")
+                        .short('d')
+                        .long("diffusion")
+                        .default_value("100000")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Diffusion passes (shoot_random_gate intensity)"),
+                )
+                .arg(
+                    Arg::new("template-source")
+                        .long("template-source")
+                        .value_parser(["perm", "template-db", "mixed"])
+                        .help("Template source: perm, template-db, mixed"),
+                )
+                .arg(
+                    Arg::new("template-db")
+                        .long("template-db")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to TemplateDB (collection.lmdb)"),
+                )
+                .arg(
+                    Arg::new("template-min-gates")
+                        .long("template-min-gates")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum template gate count"),
+                )
+                .arg(
+                    Arg::new("template-max-gates")
+                        .long("template-max-gates")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum template gate count"),
+                )
+                .arg(
+                    Arg::new("template-attempts")
+                        .long("template-attempts")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Template sampling attempts per placement"),
+                )
+                .arg(
+                    Arg::new("conjugation-min")
+                        .long("conjugation-min")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum conjugation depth (0 disables)"),
+                )
+                .arg(
+                    Arg::new("conjugation-max")
+                        .long("conjugation-max")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum conjugation depth (0 disables)"),
+                )
+                .arg(
+                    Arg::new("template-hardness-passes")
+                        .long("template-hardness-passes")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Reducer passes for template hardness check (0 disables)"),
+                )
+                .arg(
+                    Arg::new("template-min-reducer-ratio")
+                        .long("template-min-reducer-ratio")
+                        .value_parser(clap::value_parser!(f64))
+                        .help("Minimum survival ratio for template acceptance"),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Output file path (prints to stdout if not specified)"),
+                )
+                .arg(
+                    Arg::new("config")
+                        .long("config")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to JSON config file"),
+                )
+                .arg(
+                    Arg::new("db")
+                        .long("db")
+                        .default_value("./db-old")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to database directory (with SQLite + LMDB)"),
                 )
         )
 
@@ -783,6 +940,12 @@ fn main() {
             }
             if sub.get_flag("no-ancilla") {
                 config.no_ancilla_mode = true;
+            }
+            if sub.get_flag("no-pairs") {
+                config.pair_replacement_mode = false;
+            }
+            if sub.get_flag("no-equal") {
+                config.equal_replacement_mode = false;
             }
 
             let lmdb_db_path = sub.get_one::<String>("lmdb-db");
@@ -1172,6 +1335,182 @@ fn main() {
 
             // Output JSON
             println!("{}", serde_json::to_string(&result).unwrap());
+        }
+        Some(("compare", sub)) => {
+            let n = *sub.get_one::<usize>("n").unwrap();
+            let num_inputs = *sub.get_one::<usize>("inputs").unwrap();
+            let c1_path = sub.get_one::<String>("c1").unwrap();
+            let c2_path = sub.get_one::<String>("c2").unwrap();
+
+            let c1_str = fs::read_to_string(c1_path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {}", c1_path, e));
+            let c2_str = fs::read_to_string(c2_path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {}", c2_path, e));
+
+            use local_mixing::infra::circuit::Gate;
+
+            let c1 = CircuitSeq::from_string(c1_str.trim());
+            let c2 = CircuitSeq::from_string(c2_str.trim());
+
+            println!("Comparing logic tables on {} random inputs...", num_inputs);
+
+            // Print 5 examples
+            let mut rng = rand::rng();
+            let mask: usize = if n < usize::BITS as usize {
+                (1 << n) - 1
+            } else {
+                usize::MAX - 1
+            };
+
+            println!(
+                "{:<10} | {:<10} | {:<10} | Match?",
+                "Input", "C1 Out", "C2 Out"
+            );
+            println!("{:-<10}-+-{:-<10}-+-{:-<10}-+-------", "", "", "");
+
+            for _ in 0..5 {
+                let input = (rng.random::<u64>() as usize) & mask;
+                let out1 = Gate::evaluate_index_list(input, &c1.gates);
+                let out2 = Gate::evaluate_index_list(input, &c2.gates);
+                let match_str = if out1 == out2 { "✅" } else { "❌" };
+                println!(
+                    "0x{:<08x} | 0x{:<08x} | 0x{:<08x} | {}",
+                    input, out1, out2, match_str
+                );
+            }
+            println!("...");
+
+            match c1.probably_equal(&c2, n, num_inputs) {
+                Ok(_) => println!(
+                    "Circuits are functionally EQUIVALENT (checked {} inputs)",
+                    num_inputs
+                ),
+                Err(e) => println!("Circuits DIFFERENT: {}", e),
+            }
+        }
+        Some(("grow-identity", sub)) => {
+            let wires: usize = *sub.get_one("wires").unwrap_or(&32);
+            let rounds: usize = *sub.get_one("rounds").unwrap_or(&5);
+            let placements: usize = *sub.get_one("placements").unwrap_or(&10);
+            let diffusion: usize = *sub.get_one("diffusion").unwrap_or(&100_000);
+            let output_path = sub.get_one::<String>("output");
+
+            // Build config from CLI args or JSON file
+            let mut config = if let Some(config_path) = sub.get_one::<String>("config") {
+                let file = std::fs::File::open(config_path).expect("Failed to open config file");
+                let reader = std::io::BufReader::new(file);
+                serde_json::from_reader(reader).expect("Failed to parse config JSON")
+            } else {
+                IdentityGrowthConfig {
+                    target_width: wires,
+                    rounds,
+                    placements_per_round: placements,
+                    diffusion_passes: diffusion,
+                    ..Default::default()
+                }
+            };
+
+            // Overlay CLI arguments
+            if let Some(source) = sub.get_one::<String>("template-source") {
+                config.template_source = match source.as_str() {
+                    "perm" => TemplateSource::PermTables,
+                    "template-db" => TemplateSource::TemplateDB,
+                    "mixed" => TemplateSource::Mixed,
+                    _ => TemplateSource::PermTables,
+                };
+            }
+            if let Some(min_gates) = sub.get_one::<usize>("template-min-gates") {
+                config.template_gate_count_min = *min_gates;
+            }
+            if let Some(max_gates) = sub.get_one::<usize>("template-max-gates") {
+                config.template_gate_count_max = *max_gates;
+            }
+            if let Some(attempts) = sub.get_one::<usize>("template-attempts") {
+                config.template_attempts = *attempts;
+            }
+            if let Some(min_depth) = sub.get_one::<usize>("conjugation-min") {
+                config.template_conjugation_depth_min = *min_depth;
+            }
+            if let Some(max_depth) = sub.get_one::<usize>("conjugation-max") {
+                config.template_conjugation_depth_max = *max_depth;
+            }
+            if let Some(passes) = sub.get_one::<usize>("template-hardness-passes") {
+                config.template_hardness_passes = *passes;
+            }
+            if let Some(ratio) = sub.get_one::<f64>("template-min-reducer-ratio") {
+                config.template_min_reducer_ratio = *ratio;
+            }
+
+            // Open LMDB
+            let db_path = sub
+                .get_one::<String>("db")
+                .map(|s| s.as_str())
+                .unwrap_or("./db-old");
+            let env = lmdb::Environment::new()
+                .set_max_dbs(50)
+                .set_map_size(1 * 1024 * 1024 * 1024)
+                .open(Path::new(db_path))
+                .expect("Failed to open LMDB");
+
+            // Open SQLite (for random_canonical_id compatibility)
+            let sqlite_path = format!("{}/circuits.db", db_path);
+            let conn = Connection::open_with_flags(&sqlite_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect(&format!("Failed to open SQLite DB at {}", sqlite_path));
+
+            let template_db = sub.get_one::<String>("template-db").map(|path| {
+                local_mixing::infra::store::reader::TemplateDB::open(path)
+                    .expect("Failed to open TemplateDB")
+            });
+            if matches!(config.template_source, TemplateSource::TemplateDB) && template_db.is_none()
+            {
+                eprintln!("Error: --template-source template-db requires --template-db");
+                std::process::exit(1);
+            }
+            if matches!(config.template_source, TemplateSource::Mixed) && template_db.is_none() {
+                eprintln!(
+                    "Warning: --template-source mixed without --template-db; using perm tables only"
+                );
+            }
+
+            // Run identity growth
+            match grow_identity(&config, &env, &conn, template_db.as_ref()) {
+                Ok((circuit, metrics)) => {
+                    // Output circuit
+                    let circuit_str = circuit.repr();
+
+                    // Determine output path
+                    let final_output_path = if let Some(path) = output_path {
+                        path.clone()
+                    } else {
+                        // Default: save to experiments/identities/ with timestamped name
+                        let identities_dir = Path::new("experiments/identities");
+                        std::fs::create_dir_all(identities_dir).ok();
+
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        format!(
+                            "{}/identity_{}w_{}g_{}.gate",
+                            identities_dir.display(),
+                            wires,
+                            metrics.final_gates,
+                            timestamp
+                        )
+                    };
+
+                    std::fs::write(&final_output_path, &circuit_str)
+                        .expect("Failed to write output file");
+                    eprintln!(
+                        "Saved {} gates to {}",
+                        metrics.final_gates, final_output_path
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         _ => unreachable!(),
     }

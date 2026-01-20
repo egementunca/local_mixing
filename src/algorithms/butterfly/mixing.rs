@@ -620,7 +620,9 @@ pub fn abutterfly_big(
     );
     let mut prev_r_inv = first_r_inv.clone();
     let t1 = Instant::now();
-    replace_pairs(&mut c, n, _conn, &env, template_db);
+    if config.pair_replacement_mode {
+        replace_pairs(&mut c, n, _conn, &env, template_db);
+    }
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     if config.single_gate_mode {
         random_gate_replacements(&mut c, config.single_gate_replacements, n, _conn, env);
@@ -687,6 +689,7 @@ pub fn abutterfly_big(
                     n,
                     config.compression_sat_limit as u64,
                     template_db,
+                    config,
                 )
             } else {
                 compress_big(
@@ -1031,6 +1034,7 @@ pub fn abutterfly_big_delay_bookends(
                         n,
                         config.compression_sat_limit as u64,
                         template_db,
+                        config,
                     )
                     .gates
                 } else {

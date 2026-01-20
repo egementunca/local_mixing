@@ -1520,6 +1520,7 @@ pub fn compress_big_sat_lmdb(
     num_wires: usize,
     timeout: u64,
     template_db: Option<&crate::infra::store::reader::TemplateDB>,
+    config: &ObfuscationConfig,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1603,7 +1604,9 @@ pub fn compress_big_sat_lmdb(
         };
 
         if let Some(optimized) = optimized {
-            if optimized.gates.len() < rewired.gates.len() {
+            if optimized.gates.len() < rewired.gates.len()
+                || (config.equal_replacement_mode && optimized.gates.len() == rewired.gates.len())
+            {
                 // Unrewire
                 let optimized = CircuitSeq::unrewire_subcircuit(&optimized, &used_wires);
 
