@@ -12,13 +12,14 @@ use local_mixing::{
     algorithms::butterfly::{
         mixing::{
             install_kill_handler, main_butterfly, main_butterfly_big,
-            main_butterfly_big_bookendsless, main_mix,
+            main_butterfly_big_bookendsless, main_mix, main_rac_big,
         },
         replace::random_canonical_id,
     },
     algorithms::identity_growth::{IdentityGrowthConfig, TemplateSource, grow_identity},
     config::ObfuscationConfig,
     infra::circuit::{CircuitSeq, Gate},
+    infra::ids_index::build_ids_indexes,
     infra::random::random_data::{
         build_from_sql, build_initial_table, generate_heatmap_data, main_random, random_circuit,
     },
@@ -151,6 +152,75 @@ fn main() {
                     .long("config")
                     .value_parser(clap::value_parser!(String))
                     .help("Path to configuration JSON file"),
+            ),
+    )
+    .subcommand(
+        Command::new("rac")
+            .about("Obfuscate via RAC (Replace And Compress) method")
+            .arg(
+                Arg::new("rounds")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of RAC rounds"),
+            )
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("n")
+                    .default_value("32")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires (default: 32)"),
+            )
+            .arg(
+                Arg::new("save")
+                    .short('s')
+                    .long("save")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Output file path"),
+            )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i')
+                    .long("intermediate")
+                    .default_value("./progress/rac_intermediate.txt")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Intermediate progress file path"),
+            ),
+    )
+    .subcommand(
+        Command::new("ids-index")
+            .about("Build reverse index + witness prefilter for ids_n* LMDBs")
+            .arg(
+                Arg::new("db")
+                    .long("db")
+                    .default_value("./db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("LMDB directory containing ids_n* databases"),
+            )
+            .arg(
+                Arg::new("min-n")
+                    .long("min-n")
+                    .default_value("3")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Minimum ids_n* width to include"),
+            )
+            .arg(
+                Arg::new("max-n")
+                    .long("max-n")
+                    .default_value("8")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Maximum ids_n* width to include"),
             ),
     )
     .subcommand(
@@ -447,6 +517,28 @@ fn main() {
                         .required(true)
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of wires in the circuit"),
+                )
+                .arg(
+                    Arg::new("window")
+                        .long("window")
+                        .short('w')
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("50")
+                        .help("Compression window size (default: 50)"),
+                )
+                .arg(
+                    Arg::new("db")
+                        .long("db")
+                        .default_value("./db-old")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to database directory"),
+                )
+                .arg(
+                    Arg::new("passes")
+                        .long("passes")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("100")
+                        .help("Max reducer passes"),
                 ),
         )
         .subcommand(
@@ -476,9 +568,28 @@ fn main() {
         )
         .subcommand(
             Command::new("lmdb")
-                .about("Explore an existing database")
-                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
+                .about("Run reducer on a circuit file")
+                .arg(
+                    Arg::new("p")
+                        .short('p')
+                        .long("path")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the circuit file"),
+                )
+                .arg(
+                    Arg::new("db")
+                        .long("db")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to database directory"),
+                )
+                .arg(
+                    Arg::new("passes")
+                        .long("passes")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("100")
+                        .help("Max reducer passes"),
+                ),
         )
         .subcommand(
             Command::new("lmdbcounts")
@@ -851,6 +962,75 @@ fn main() {
                 main_butterfly(&c, rounds, &mut conn, 6, &config);
             }
         }
+        Some(("rac", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+            let path: &String = sub.get_one("path").unwrap();
+            let n: usize = *sub.get_one("n").unwrap();
+            let save: &String = sub.get_one("save").unwrap();
+            let intermediate: &String = sub.get_one("intermediate").unwrap();
+
+            // Read the input circuit
+            let data = fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", path));
+            let c = CircuitSeq::from_string(&data);
+
+            println!("Running RAC on circuit with {} wires, {} gates", n, c.gates.len());
+
+            // Open DB connection
+            let mut conn = Connection::open_with_flags(
+                "db/circuits.db",
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("Failed to open DB (read-only)");
+            conn.execute_batch(
+                "
+                PRAGMA synchronous = NORMAL;
+                PRAGMA journal_mode = WAL;
+                PRAGMA temp_store = MEMORY;
+                PRAGMA cache_size = -200000;
+                PRAGMA locking_mode = EXCLUSIVE;
+                ",
+            )
+            .unwrap();
+
+            // Open LMDB environment
+            let lmdb = "./db";
+            let env = lmdb::Environment::new()
+                .set_max_dbs(60)
+                .set_map_size(700 * 1024 * 1024 * 1024)
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+
+            // Run RAC
+            main_rac_big(&c, rounds, &mut conn, n, save, &env, intermediate);
+        }
+        Some(("ids-index", sub)) => {
+            let db_path: &String = sub.get_one("db").unwrap();
+            let min_n: usize = *sub.get_one("min-n").unwrap();
+            let max_n: usize = *sub.get_one("max-n").unwrap();
+
+            let env = lmdb::Environment::new()
+                .set_max_dbs(100)
+                .set_map_size(700 * 1024 * 1024 * 1024)
+                .open(Path::new(db_path))
+                .expect("Failed to open lmdb");
+
+            let mut ids_db_names = Vec::new();
+            for n in min_n..=max_n {
+                ids_db_names.push(format!("ids_n{}", n));
+            }
+
+            println!(
+                "Building ids reverse index + witness prefilter from: {:?}",
+                ids_db_names
+            );
+            let stats = build_ids_indexes(&env, &ids_db_names)
+                .expect("Failed to build ids reverse index");
+            println!(
+                "ids-index done: dbs_scanned={} ids_seen={} rev_inserted={} token_inserted={}",
+                stats.dbs_scanned, stats.ids_seen, stats.rev_inserted, stats.token_inserted
+            );
+        }
         Some(("bbutterfly", sub)) => {
             // let rounds: usize = *sub.get_one("rounds").unwrap();
             let path: &str = sub.get_one::<String>("path").unwrap().as_str();
@@ -1112,9 +1292,44 @@ fn main() {
             analyze_gate_to_wires(&c, n, xlabel).unwrap();
         }
         Some(("lmdb", sub)) => {
-            let n: usize = *sub.get_one("n").unwrap();
-            let m: usize = *sub.get_one("m").unwrap();
-            let _ = sql_to_lmdb_perms(n, m);
+            let path: &String = sub.get_one("p").unwrap();
+            // let n: usize = *sub.get_one("n").unwrap(); // Not used
+            // let window: usize = *sub.get_one("window").unwrap(); // Removed from config
+            // let active: Option<usize> = sub.get_one("active").copied(); // Removed from config
+
+            let data = fs::read_to_string(path).expect("Failed to read circuit file");
+            let mut c = CircuitSeq::from_string(&data);
+
+            let initial_len = c.gates.len();
+
+            // Open DBs
+            let db_path = sub
+                .get_one::<String>("db")
+                .map(|s| s.as_str())
+                .unwrap_or("./db-old");
+            let env = lmdb::Environment::new()
+                .set_max_dbs(50)
+                .set_map_size(1 * 1024 * 1024 * 1024)
+                .open(Path::new(db_path))
+                .ok(); // Optional, ignore if fail (or log warning?)
+
+            let sqlite_path = format!("{}/circuits.db", db_path);
+            let conn =
+                Connection::open_with_flags(&sqlite_path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok();
+
+            let passes: usize = *sub.get_one("passes").unwrap();
+            let config = ReduceConfig {
+                max_passes: passes,
+                max_stall: 10,
+            };
+
+            println!(
+                "Compressing {} gates (DB: {:?}, Passes: {})...",
+                initial_len, db_path, passes
+            );
+            let final_len = reduce_circuit(&mut c, &config, env.as_ref(), conn.as_ref());
+            println!("Final Length: {}", final_len);
+            println!("Ratio: {:.4}", final_len as f64 / initial_len as f64);
         }
         Some(("lmdbcounts", _)) => {
             let env_path = "./db";
@@ -1295,7 +1510,12 @@ fn main() {
             let data = generate_heatmap_data(&c1, &c2, n, inputs, canonicalize);
 
             // Output JSON to stdout
-            println!("{}", serde_json::to_string(&data).unwrap());
+            let output = serde_json::json!({
+                "heatmap_data": data,
+                "x_size": c1.gates.len() + 1,
+                "y_size": c2.gates.len() + 1
+            });
+            println!("{}", output);
         }
 
         Some(("align", sub)) => {

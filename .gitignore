@@ -33,3 +33,5 @@ configs
 data
 experiments
 .DS_Store
+*.gate
+db-old/

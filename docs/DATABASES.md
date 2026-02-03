@@ -75,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_perm_{table} ON {table} (perm);
 ### 2.3 Usage notes
 - These tables live in `./db` and are opened directly in `main.rs` (`bbutterfly`, `abbutterfly`, `compress`, `local-mix`).
 - The CLI flag `--lmdb-db` does **not** point to these tables; it points to the TemplateDB schema below.
+- **Inspection**: The `identity-factory-api` exposes endpoints (`/api/v1/perm-database`) to browse these tables, and the UI includes a "Permutation Tables" explorer panel.
 
 ---
 

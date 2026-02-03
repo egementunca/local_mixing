@@ -77,4 +77,11 @@ if __name__ == "__main__":
             print("Error: Could not parse JSON input")
             sys.exit(1)
             
+    if isinstance(data, dict):
+        if "heatmap_data" in data:
+            data = data["heatmap_data"]
+        else:
+            print("Error: JSON input seems to be a dict but missing 'heatmap_data' key")
+            sys.exit(1)
+
     plot_heatmap(data, args.output, args.title)

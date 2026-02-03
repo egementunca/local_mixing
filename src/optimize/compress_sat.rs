@@ -151,7 +151,7 @@ pub fn compress_sat_run(
         .arg("../sat_revsynth/scripts/synthesize_from_tt.py")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null()) // Suppress stderr in parallel mode
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .ok()?;
 
@@ -165,7 +165,8 @@ pub fn compress_sat_run(
     let output = child.wait_with_output().ok()?;
 
     if !output.status.success() {
-        // Python script failed or crashed
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("SAT Script Failed: {}", stderr);
         return None;
     }
 

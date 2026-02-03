@@ -55,7 +55,9 @@ Algorithm:
 1. Start with an empty `CircuitSeq` and a `SkeletonGraph` (see Section 4).
 2. For each placement:
    - choose a template width `m`
-   - sample an identity template `T` from either TemplateDB or perm tables
+   - sample an identity template `T` from either TemplateDB or perm tables, with gate-count constraints
+   - optionally wrap `T` with conjugation `R . T . R^-1` (random `R`) to inflate and harden
+   - run a quick reducer pass; reject templates below a minimum survival ratio
    - choose a wire subset `S` of size `m` using the skeleton heuristic
    - rewire `T` onto `S`
    - insert `T` at a random or scheduled position in the big circuit
@@ -71,7 +73,7 @@ After seeding a batch:
 Goal: diffuse local structure so templates are not trivially visible.
 
 ### 3.3 Stage C: Bounded compression
-Run compression with a small budget to remove only the most obvious cancellations, but avoid collapsing to zero.
+Run compression with a small reducer budget to remove only the most obvious cancellations, but avoid collapsing to zero.
 
 Practical guardrails:
 - cap compression window counts (`compression_window_size`, `compression_window_size_sat`)
@@ -104,6 +106,7 @@ Track at least:
 - skeleton graph stats (avg degree, component sizes)
 - reducer compression ratio: `len_after / len_before` using `reduce_circuit`
 - number of template deletions found by the reducer (optional)
+- template skip rate (failed hardness/size checks)
 
 ## 6. Proposed Configuration Knobs
 
@@ -111,7 +114,12 @@ New config or CLI options (proposal):
 - `identity_growth.rounds`
 - `identity_growth.target_gate_count` or `placements_per_round`
 - `identity_growth.template_width_min/max`
+- `identity_growth.template_gate_count_min/max`
 - `identity_growth.template_source` (perm_tables, template_db, mixed)
+- `identity_growth.template_attempts`
+- `identity_growth.template_conjugation_depth_min/max`
+- `identity_growth.template_hardness_passes`
+- `identity_growth.template_min_reducer_ratio`
 - `identity_growth.mix_passes`
 - `identity_growth.compression_budget`
 - `identity_growth.min_survival_ratio`

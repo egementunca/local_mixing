@@ -160,9 +160,11 @@ contiguous_convex(circuit, selected_gates):
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `single_gate_mode` | false | Enable single-gate replacement pass. |
-| `single_gate_replacements` | 500 | Number of single gates to replace with identity templates. |
-| `bookendless` | false | Skip global bookend insertion (experimental). |
+| `no_ancilla_mode` | `false` | If true, disables using extra wires for compression. |
+| `single_gate_mode` | `false` | If true, runs a pass of single gate random replacements before the main loop. |
+| `pair_replacement_mode` | `true` | If true, enables replacing adjacent pairs with identities (inflating/blurring). |
+| `equal_replacement_mode` | `true` | If true, allows "compression" to accept replacements of equal length (blurring). |
+| `sat_mode` | `true` | Uses SAT solver / large LMDB for rigorous compression (experimental). |
 
 **Single-Gate Replacement**: For gate $g$, sample a canonical identity $I = g_1 \cdot g_2 \cdot \ldots \cdot g_k$ where $g_1 = g$. Replace $g$ with $g_2 \cdot \ldots \cdot g_k$ (the remainder after removing the matched gate).
 
