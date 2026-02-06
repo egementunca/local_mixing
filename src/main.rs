@@ -1155,7 +1155,7 @@ fn main() {
 
             let env = lmdb::Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(60)
+                .set_max_dbs(100)
                 .set_map_size(1 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");

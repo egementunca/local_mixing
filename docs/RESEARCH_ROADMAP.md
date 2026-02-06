@@ -37,32 +37,23 @@
 
 ## Part 1: Branch Integration (`many_thread`)
 
-### Status: Ready for Cherry-Pick
+### Status: ✅ COMPLETE (2026-01-22)
 
-Key functions to port:
+See [RAC_INTEGRATION_COMPLETE.md](RAC_INTEGRATION_COMPLETE.md) for full details.
+
+Key functions ported:
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `simple_find_convex_subcircuit` | ✅ Use first | Simpler, works |
-| `targeted_convex_subcircuit` | ⚠️ Test first | Reported not working yet |
-| `main_rac_big` | ✅ Port | New RAC mixing scheme |
-| `replace_and_compress_big` | ✅ Port | Used by RAC |
-| `sequential_compress_big` | ✅ Port | Alternative compression |
+| `simple_find_convex_subcircuit` | ✅ Done | Working in production |
+| `targeted_convex_subcircuit` | ✅ Done | Ported, marked experimental |
+| `main_rac_big` | ✅ Done | CLI command `rac` available |
+| `replace_and_compress_big` | ✅ Done | Integrated |
+| `sequential_compress_big` | ✅ Done | Integrated |
+| `replace_sequential_pairs` | ✅ Done | ~260 lines ported |
+| `shoot_left_vec` | ✅ Done | Helper ported |
 
-### Merge Plan
-
-```bash
-# Step 1: Create integration branch
-git checkout -b feature/rac-integration
-
-# Step 2: Extract functions from many_thread
-git show remotes/upstream/many_thread:src/random/random_data.rs > /tmp/random_data_new.rs
-git show remotes/upstream/many_thread:src/replace/mixing.rs > /tmp/mixing_new.rs
-git show remotes/upstream/many_thread:src/replace/replace.rs > /tmp/replace_new.rs
-
-# Step 3: Manually copy functions into existing structure
-# Step 4: Test each function independently
-```
+**~1,395 lines of code ported and tested.**
 
 ---
 
@@ -220,45 +211,38 @@ async def search_circuits(wires: int = None, max_gates: int = None):
 
 ---
 
-## Priority Matrix (Final)
+## Priority Matrix (Updated 2026-02-03)
 
-| Priority | Task | Track | Effort |
-|----------|------|-------|--------|
-| 🔴 **P0** | Port `simple_find_convex_subcircuit` | Rust | ⚡ Quick |
-| 🔴 **P0** | Port RAC mixing scheme | Rust | 🔧 Medium |
-| 🔴 **P0** | Fix Database panel search (RightPanel.tsx) | UI | 🔧 Medium |
-| 🔴 **P0** | Skeleton chain + limited unroll | Python | 🏗️ Large |
-| 🟡 **P1** | Scale detection in Playground | UI | ⚡ Quick |
-| 🟡 **P1** | Statistics view for 2k+ gates | UI | 🔧 Medium |
-| 🟡 **P1** | Region browser (react-window) | UI | 🏗️ Large |
-| 🟢 **P2** | Test `targeted_convex_subcircuit` | Rust | 🔧 Medium |
-| 🟢 **P2** | Config schema (after RAC) | Full stack | 🔧 Medium |
-| 🟢 **P2** | Deploy to GCP | DevOps | 🔧 Medium |
+| Priority | Task | Track | Effort | Status |
+|----------|------|-------|--------|--------|
+| ~~🔴 **P0**~~ | ~~Port `simple_find_convex_subcircuit`~~ | Rust | ⚡ Quick | ✅ Done |
+| ~~🔴 **P0**~~ | ~~Port RAC mixing scheme~~ | Rust | 🔧 Medium | ✅ Done |
+| 🔴 **P0** | Fix Database panel search (RightPanel.tsx) | UI | 🔧 Medium | 🚧 Open |
+| 🔴 **P0** | Skeleton chain + limited unroll | Python | 🏗️ Large | ✅ Done (sat_revsynth) |
+| 🟡 **P1** | Scale detection in Playground | UI | ⚡ Quick | 🚧 Open |
+| 🟡 **P1** | Statistics view for 2k+ gates | UI | 🔧 Medium | 🚧 Open |
+| 🟡 **P1** | Region browser (react-window) | UI | 🏗️ Large | 🚧 Open |
+| 🟢 **P2** | Test `targeted_convex_subcircuit` | Rust | 🔧 Medium | 🚧 Open |
+| 🟢 **P2** | Config schema (after RAC) | Full stack | 🔧 Medium | 🚧 Open |
+| 🟢 **P2** | Deploy to GCP | DevOps | 🔧 Medium | 🚧 Open |
 
 ---
 
-## Implementation Plans to Create
+## Implementation Plans
 
-### Plan 1: Port RAC from many_thread
-- Cherry-pick convex functions
-- Port `replace_and_compress_big`
-- Port `main_rac_big`
-- Add CLI command
-- Test with sample circuits
+### Plan 1: Port RAC from many_thread ✅ COMPLETE
+See [RAC_INTEGRATION_COMPLETE.md](RAC_INTEGRATION_COMPLETE.md)
 
-### Plan 2: Fix Database Panel
+### Plan 2: Fix Database Panel 🚧 IN PROGRESS
 - Create search API endpoint
 - Connect handleSearch to real backend
 - Implement "Load to Canvas" action
 - Add circuit preview
 
-### Plan 3: Skeleton Chain Synthesis
-- Define Python API in sat_revsynth
-- Implement `limited_unroll` with depth/gate limits
-- Create example script
-- Benchmark memory vs full unroll
+### Plan 3: Skeleton Chain Synthesis ✅ COMPLETE
+See [sat_revsynth/SKELETON_CHAIN_IMPLEMENTATION.md](../../sat_revsynth/SKELETON_CHAIN_IMPLEMENTATION.md)
 
-### Plan 4: Scale-Adaptive Playground
+### Plan 4: Scale-Adaptive Playground 🚧 PLANNED
 - Add gate count detection
 - Create `StatisticsView` component
 - Create `RegionBrowser` with react-window
