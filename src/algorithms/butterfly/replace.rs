@@ -2283,6 +2283,36 @@ mod tests {
     use rusqlite::Connection;
     use std::time::Instant;
 
+    fn require_file(path: &str) -> bool {
+        if !Path::new(path).exists() {
+            eprintln!("Skipping test: missing {}", path);
+            return false;
+        }
+        true
+    }
+
+    fn require_dir(path: &str) -> bool {
+        if !Path::new(path).is_dir() {
+            eprintln!("Skipping test: missing directory {}", path);
+            return false;
+        }
+        true
+    }
+
+    fn db_tests_enabled() -> bool {
+        std::env::var("LOCAL_MIXING_DB_TESTS")
+            .ok()
+            .as_deref()
+            == Some("1")
+    }
+
+    fn slow_tests_enabled() -> bool {
+        std::env::var("LOCAL_MIXING_SLOW_TESTS")
+            .ok()
+            .as_deref()
+            == Some("1")
+    }
+
     #[test]
     fn test_shoot_left_vec_stops_on_collision() {
         // g2 should shoot left past g1 and stop just right of g0 (first collision).
@@ -2348,6 +2378,13 @@ mod tests {
     }
     #[test]
     fn random_circuit_exists_in_db() {
+        if !db_tests_enabled() {
+            eprintln!("Skipping DB test (set LOCAL_MIXING_DB_TESTS=1)");
+            return;
+        }
+        if !require_file("db/circuits.db") {
+            return;
+        }
         // Open the SQLite DB
         let conn = Connection::open("db/circuits.db").expect("Failed to open DB");
 
@@ -2395,6 +2432,17 @@ mod tests {
     use std::path::Path;
     #[test]
     fn test_compression_big_time() {
+        if !slow_tests_enabled() {
+            eprintln!("Skipping slow test (set LOCAL_MIXING_SLOW_TESTS=1)");
+            return;
+        }
+        if !db_tests_enabled() {
+            eprintln!("Skipping DB test (set LOCAL_MIXING_DB_TESTS=1)");
+            return;
+        }
+        if !require_file("compressed.txt") || !require_file("db/circuits.db") || !require_dir("./db") {
+            return;
+        }
         // let total_start = Instant::now();
 
         // // ---------- FIRST TEST ----------
@@ -2506,6 +2554,13 @@ mod tests {
 
     #[test]
     fn test_random_canon_id() {
+        if !db_tests_enabled() {
+            eprintln!("Skipping DB test (set LOCAL_MIXING_DB_TESTS=1)");
+            return;
+        }
+        if !require_dir("./db") || !require_file("db/circuits.db") {
+            return;
+        }
         let env = Environment::new()
             .set_max_readers(10000)
             .set_max_dbs(50)
@@ -2532,6 +2587,13 @@ mod tests {
 
     #[test]
     fn print_lmdb_keys() -> Result<(), Box<dyn std::error::Error>> {
+        if !db_tests_enabled() {
+            eprintln!("Skipping DB test (set LOCAL_MIXING_DB_TESTS=1)");
+            return Ok(());
+        }
+        if !require_dir("./db") {
+            return Ok(());
+        }
         let env_path = "./db";
         let db_name = "n6m5";
 
@@ -2555,6 +2617,13 @@ mod tests {
 
     #[test]
     fn test_find_perm_lmdb() {
+        if !db_tests_enabled() {
+            eprintln!("Skipping DB test (set LOCAL_MIXING_DB_TESTS=1)");
+            return;
+        }
+        if !require_dir("./db") {
+            return;
+        }
         let perm = Permutation {
             data: vec![
                 3, 2, 5, 4, 7, 6, 1, 0, 11, 10, 13, 12, 15, 14, 9, 8, 19, 18, 21, 20, 23, 22, 17,

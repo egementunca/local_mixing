@@ -1,321 +1,231 @@
-# Local Mixing — Identity Obfuscation Plan (Rich MD Spec)
+# Local Mixing for Reversible-Circuit Obfuscation (Codebase-Aligned Plan)
 
-This document rewrites and organizes the “right-side” sketch into a clean, implementable plan for a coding agent.
+This is the implementation-ready plan for a two-stage, local-rewrite obfuscator and its attack-aligned metrics. It updates prior identity-obfuscation notes to match the current `local_mixing` codebase.
 
----
-
-## 0) Problem Statement
-
-You want to **generate large identity circuits** (e.g., **64 wires**) and then **obfuscate** them so that:
-
-- the circuit is still an **identity permutation** overall
-- obvious cancellations are hidden
-- a reducer/attacker that uses local rules + template lookup has a hard time compressing it
-
-In parallel, you want an **attack-style reducer** that tries to simplify circuits so you can measure “how obfuscated” a generated identity is.
+Sources: 2024-006.pdf (mixing/complexity gap) and 2309.05731v3.pdf (entropy framing, k-string dynamics). These PDFs are not in-repo; the plan below stands alone.
 
 ---
 
-## 1) Key Objects and Terms
+## 0) Scope and target
 
-### Identity circuit
-A circuit whose overall function is the identity permutation on all wires.
-
-### Template identity
-A **known identity subcircuit** stored in a database (template lookup table).
-
-### Window
-A contiguous subsequence of gates (length `L`) extracted from a big circuit, used for matching templates.
-
-### Active wire set (size `m`)
-The set of wires that appear in gates inside a window (or template).  
-`m = |{wires touched by gates in window}|`
-
-This matters because searching templates on smaller `m` is much cheaper.
-
-### Canonicalization
-A deterministic mapping of a window (or template) into a canonical form so that matching works even if wire IDs differ.
-
-### Reducer
-A simplification engine that tries to shrink the circuit (delete identities) using:
-- local rules (swap/commute + cancel)
-- window scanning + template matching (delete matched templates)
-
-### Obfuscator
-A generator that applies moves to **make reduction difficult**, while preserving identity.
+- Target domain is reversible circuits in the ECA57 gate basis.
+- Default use-case is identity obfuscation, but the rewrite dynamics are function-preserving for any permutation.
+- Primary objective is to implement a **local rewrite dynamics** that can inflate and then **knead** redundancy, and to measure success using attacker-aligned metrics.
 
 ---
 
-## 2) High-Level Strategy
+## 1) Current codebase assets to reuse
 
-You have **two interacting engines**:
-
-1. **Reducer engine (attacker model):**  
-   tries to compress / detect hidden templates inside a large circuit.
-
-2. **Obfuscator engine (defender/generator):**  
-   starts from an identity and repeatedly rewrites it to hide cancellations and templates.
-
-You evaluate obfuscation by running the reducer on the obfuscated identity and measuring how much it compresses.
-
----
-
-## 3) Core Identity Construction
-
-A robust baseline for building nontrivial identities:
-
-### 3.1 Identity from a circuit and its inverse
-1. sample a nontrivial circuit `P` (depth > 1)
-2. build:
-   - `ID = P · inv(P)`
-
-### 3.2 More “random-looking” identity
-To avoid immediate adjacency structure:
-- apply independent randomizations to the forward and inverse sides:
-
-`ID = P^(1) · inv(P^(2))`
-
-Where `P^(1)` and `P^(2)` are “equivalent in function” but differ syntactically via:
-- wire relabeling / placement policies
-- internal rewrite moves that preserve function
-- insertion of identity templates that later get diffused
-
-This gives you structured identities that can be hard to spot.
+- Circuit model and rewiring: `local_mixing/src/infra/circuit/circuit.rs` (`CircuitSeq`, `rewire`, `unrewire`, `probably_equal`).
+- Convex subcircuit selection: `local_mixing/src/infra/random/random_data.rs` (`find_convex_subcircuit`, `simple_find_convex_subcircuit`, `contiguous_convex`).
+- Canonical window key (structure-only): `local_mixing/src/hashing/canonical.rs` (`canonical_window_key`).
+- Truth-table hash (functional): `local_mixing/src/optimize/compress_sat.rs` (`compute_canonical_hash`).
+- Template DB reader: `local_mixing/src/infra/store/reader.rs` (`TemplateDB`, `get_by_canonical_hash`, `get_smaller_equivalent`, `get_random_identity`).
+- Perm table sampling: `local_mixing/src/algorithms/butterfly/replace.rs` (`compress_lmdb`, `random_perm_lmdb` helper, LMDB `n{N}m{M}` tables).
+- Local reducer MVP: `local_mixing/src/algorithms/annealing/local.rs` (`reduce_circuit`, `mix_step`).
+- Skeleton and wire-coverage helpers: `local_mixing/src/algorithms/identity_growth.rs` (`SkeletonGraph`) and `local_mixing/src/infra/random/random_data.rs` (`create_skeleton`).
 
 ---
 
-## 4) Reducer Engine Spec
+## 2) Core definitions (implementation-level)
 
-The reducer is the **baseline attacker** that tries to simplify circuits.
-
-### 4.1 Reducer pipeline
-The reducer runs repeated rounds until no progress:
-
-1. **Local pass (cheap):**
-   - cancel adjacent inverse pairs
-   - apply commutation (swap) rules to expose cancellations
-   - do basic gate-normalization (if your basis supports it)
-
-2. **Window scan (more expensive):**
-   - slide a window across the circuit
-   - for each window:
-     - compute canonical key
-     - query template DB
-     - if exact match: **delete the entire window** (replace with nothing)
-
-3. repeat until fixed point
-
-### 4.2 “m schedule” (your “first m width” idea)
-Instead of scanning for all templates at once:
-- start with low active-wire count templates first
-
-Example schedule:
-- pass 1: only templates with `m ≤ 4`
-- pass 2: `m ≤ 6`
-- pass 3: `m ≤ 8`
-- … (stop at a budget)
-
-This makes the search scalable and models realistic attackers.
-
-### 4.3 Optional witness prefilter (scales window scanning)
-To avoid expensive canonicalization for every window:
-- store short “witness hashes” in the template DB
-- quickly check if a window contains any witness
-- only then do full canonical match
-
-This is consistent with your “witness” notes.
+- Circuit `C` is a `CircuitSeq` with `|C|` gates and width `n`.
+- Equivalent circuits share the same permutation: `C ~ C'` if `π_C = π_{C'}`.
+- A **window** is a convex, weakly connected subcircuit extracted from `C` and made contiguous by `contiguous_convex`.
+- **Complexity gap** for a window `W`: `CG_hat(W) = |W| - CC_hat(W)`, where `CC_hat` is the shortest equivalent circuit found by DB/SAT within a budget.
 
 ---
 
-## 5) Template Database Spec
+## 3) Algorithm overview (two-stage)
 
-You already have a template lookup table. This is what it should store and expose.
+### 3.1 Stage A: Inflation (inject redundancy)
 
-### 5.1 Stored fields per template
-- `template_id`
-- `gate_list` (in your gate basis: e.g. ECA57 / Toffoli / etc.)
-- `m_active_wires`
-- `canonical_hash` (the main lookup key)
-- optional:
-  - `witness_hashes`: short subsequence hashes
-  - `symmetry_variants`: if you support more than canonical relabeling
+Goal: increase local complexity gap with small windows.
 
-### 5.2 Query types
-#### (A) Exact match
-Input: window canonical hash  
-Output: list of matching templates (often 0 or 1)
+Mechanics:
+- Sample small convex windows `ℓ_out` (typical 2..10 gates, active wires capped).
+- Replace with a longer equivalent window `ℓ_in = ℓ_out + δ`.
 
-This is the baseline, simplest, most reliable.
+Backends, in order:
+- Perm tables (`n{N}m{M}`) for **same function, longer length** if available.
+- Identity-template insertion (TemplateDB identity or perm-table identity) embedded into the window to increase length while preserving function.
+- SAT fallback for bounded synthesis of longer circuits (future; needs same-permutation constraint).
 
-#### (B) Approximate match (future)
-Input: window features  
-Output: closest template candidates by a distance metric
+### 3.2 Stage B: Kneading (spread redundancy, fixed size)
 
-You mentioned “closest by something (Hamming?)” — this is a later stage.
+Goal: delocalize gaps so local peeling fails, without changing global size.
 
----
+Mechanics:
+- Sample larger convex windows `ℓ_knd >> ℓ_in`.
+- Apply **same-size** equivalent replacements, or a sequence of smaller same-size replacements inside the window, to keep `|W'| = |W|`.
 
-## 6) Canonicalization (Critical for Matching)
-
-You need matching to be wire-label invariant.
-
-### 6.1 Canonical window key algorithm
-Given a window (list of gates):
-1. extract touched wires: `W = sorted(unique(wires in window))`
-2. relabel wires to `[0..m-1]` deterministically:
-   - e.g. `W[0] -> 0`, `W[1] -> 1`, ...
-3. rewrite every gate’s operands under this relabeling
-4. serialize gate sequence into a stable representation
-5. hash the serialization -> `canonical_hash`
-
-**Result:** windows match templates even if they appear on different physical wires.
-
-### 6.2 Important constraint
-This canonicalization does *not* search over all permutations — it just normalizes the wires *as they appear*.
-That avoids factorial explosion (which your notes flagged).
+Practical implementation choices:
+- For small windows, use perm tables to sample an alternative circuit at the same length.
+- For large windows, apply `K` in-window rewrites using smaller same-size windows (keeps total window length unchanged).
+- Optional SAT-based same-size synthesis is a future extension if we add a fixed-size constraint to the solver interface.
 
 ---
 
-## 7) Obfuscator Engine Spec
+## 4) Window selection (weak connectivity + convexity)
 
-The obfuscator generates identities that are hard for the reducer to compress.
+### 4.1 Gate-level skeleton graph
 
-### 7.1 Obfuscator pipeline
-1. Start from a structured identity:
-   - `ID = P · inv(P)` (baseline)
-   - or `P^(1) · inv(P^(2))` (stronger)
+- Nodes are gate indices.
+- Undirected edge between two gates if they share any wire.
+- A window is **weakly connected** if its induced subgraph is connected.
 
-2. Repeat for N steps:
-   - apply “hiding moves” that preserve identity
-   - aim to:
-     - spread cancellations apart
-     - diffuse template structure
-     - touch many wires (64-wire coverage goal)
+Implementation notes:
+- Build adjacency by scanning gates and recording shared-wire collisions.
+- Use BFS from a random seed gate to collect `ℓ` nodes.
+- This is separate from `SkeletonGraph` (wire-level) and `create_skeleton` (dependency layering) but can reuse their collision logic (`Gate::collides_index`).
 
-3. Output an identity circuit `ID_obf`
+### 4.2 Convexity enforcement
 
-### 7.2 Allowed move categories (basis-independent wording)
-- **Commutation moves:** swap two gates when they are independent under your gate semantics.
-- **Cancellation moves:** remove adjacent inverse pairs.
-- **Template insertion:** insert a known identity template into the circuit.
-- **Diffusion:** after insertion, apply commutations to spread the inserted structure so it doesn’t remain as a clean block.
+- Use `contiguous_convex` to bubble the selected gate set into a contiguous block.
+- If convexity fails, resample.
 
-**Note:** The exact commutation conditions depend on your gate basis (ECA57 vs Toffoli etc.).
+Deliverable API:
+- `WindowSelector::sample(C, ℓ, max_wires) -> Window` returning contiguous range and a mapping for local rewiring.
 
 ---
 
-## 8) Metrics (How you Measure Obfuscation)
+## 5) Equivalence oracle (replacement source)
 
-You implicitly want a “quality of obfuscation” metric.
-A clean baseline is:
+The oracle standardizes how windows are replaced across inflation, kneading, and attacker modes.
 
-### 8.1 Compression ratio under attacker
-Let:
-- `len_before = gate_count(ID_obf)`
-- `len_after = gate_count(Reducer(ID_obf))`
+Required methods:
+- `get_shortest(window)` for compression and attacker.
+- `get_same_size_alt(window)` for kneading.
+- `get_longer_alt(window, target_len)` for inflation.
 
-Define:
-- `compression_ratio = len_after / len_before`
+Backend wiring:
+- TemplateDB (LMDB `templates_by_hash`) using truth-table hash `compute_canonical_hash`.
+- Perm tables (`n{N}m{M}`) for random sampling by permutation.
+- SAT fallback (future) for size-bounded synthesis.
 
-Interpretation:
-- closer to **1.0** = harder to reduce = better obfuscation (under this attacker)
-- smaller value = easier to reduce = weaker obfuscation
-
-### 8.2 Attack trace metrics
-Collect:
-- number of template deletions found
-- smallest `m` level that still yields deletions
-- number of reducer rounds before convergence
-- distribution of where deletions occur (clustered vs spread)
-
-### 8.3 Interaction graph metrics (your “skeleton/edges” note)
-Optional but aligned with your sketch:
-
-Build a graph:
-- nodes = wires
-- each gate adds hyperedge / pairwise edges between touched wires
-
-Track:
-- edge density
-- connected component sizes
-- “distance” distribution if wires are ordered (range of interactions)
-- how these correlate with reducer success
+Important constraints:
+- TemplateDB stores one record per `(width, gate_count, hash)`. Same-size alternatives are not guaranteed from this DB.
+- Perm tables are the primary source for same-size alternatives when available.
+- For windows wider than DB coverage, fall back to identity insertions or local commutation-based kneading.
 
 ---
 
-## 9) SAT Repair Extension (Future, matches your later messages)
+## 6) Rewriter (extract, rewire, replace, splice)
 
-You suggested:
-> if I don’t have the exact permutation for a subcircuit I picked to replace, select closest then synthesize rest incrementally by SAT.
-
-This is a second-stage pipeline:
-
-### 9.1 Approximate replacement + repair
-1. choose a target window `W` to replace
-2. pick a template `T` that is “closest” (by some distance)
-3. replace `W` with `T` (circuit may no longer be identity)
-4. synthesize a compensator `R` so that the global circuit returns to identity:
-   - solve `C · R = ID` on boundary wires / limited scope
-   - SAT constraints enforce allowed depth/width budget
-
-This is powerful but more complex; implement after the exact-match pipeline is stable.
+Steps:
+- Select a convex, connected window and extract gates.
+- Rewire to a compact wire set (existing `CircuitSeq::rewire` and `unrewire` utilities).
+- Query the oracle for replacement.
+- Unrewire and splice back into the circuit.
+- Optional correctness check with `CircuitSeq::probably_equal` for small widths.
 
 ---
 
-## 10) Concrete Implementation TODOs for an Agent
+## 7) Attacker model (peeling)
 
-### Phase 1 — baseline system
-1. Implement `CanonicalWindowKey(window) -> hash`
-2. Implement `TemplateDB` indexed by `canonical_hash`, grouped by `m`
-3. Implement `Reducer`:
-   - `local_pass_swap_cancel()`
-   - `window_scan_exact_match_delete(m_schedule)`
-4. Implement `Obfuscator` baseline:
-   - build `P · inv(P)`
-   - insert templates + diffusion passes
-5. Add metrics:
-   - compression ratio
-   - deletion counts
-   - reducer round counts
+Define `attack_peel(C, ℓ_in, ℓ_out, trials_per_pass)`:
 
-### Phase 2 — scaling improvements
-6. Add witness prefilter
-7. Add interaction-graph stats
-8. Add approximate matching + SAT repair (optional)
+- Sample convex windows of length `ℓ_in`.
+- Compute `CC_hat` using the oracle (`get_shortest`).
+- If `CC_hat <= ℓ_out`, replace with the shortest known equivalent.
+- Repeat until no improvements or a max pass count.
+
+This attacker should be used as a **primary metric** before and after kneading.
 
 ---
 
-## 11) What the Agent Needs From You (Minimal Clarifications)
+## 8) Metrics and logging (minimum viable suite)
 
-To implement correctly, the agent must know:
+### 8.1 Gap spreading curve
 
-1. **Gate basis definitions**
-   - how to compute inverse of a gate
-   - what “independent gates commute” means in your semantics
+For window sizes `s ∈ {4, 8, 16, 32, 64, ...}`:
+- Sample windows and compute `CG_hat` where possible.
+- Log mean, median, 95th percentile of `CG_hat` and fraction of windows with `CG_hat > 0`.
 
-2. **Template format**
-   - how templates are stored now (file? sqlite? serialized rust structs?)
+Expected behavior:
+- After inflation: gaps appear at small `s`.
+- After kneading: gaps shift to larger `s` and become harder to localize.
 
-3. **Window parameters**
-   - typical window lengths you want to scan
-   - m-schedule (max active wires to try)
+### 8.2 Attacker success curve
 
-You can keep everything else as engineering choices.
+Log per pass:
+- number of replacements
+- total gate reduction
+- time-to-stagnation
+
+### 8.3 Reducibility power curve `M(k)`
+
+Define `M(k)` as the fraction of gates removable using windows up to size `k`.
+Lower is better for small `k`.
+
+### 8.4 Local entropy proxy
+
+For sampled windows at fixed size:
+- `count_alternatives` = number of same-size alternatives in perm tables (approx or sampled).
+- `S_hat = log2(count_alternatives + 1)`.
+
+### 8.5 Sectoring diagnostics
+
+Run multiple seeds from the same input; compute pairwise distances between outputs.
+Feature options (all implementable locally):
+- histogram of canonical window keys for small windows
+- wire-triplet frequency sketches
+- adjacency histogram (wire or gate-level)
 
 ---
 
-## 12) Output Deliverables
+## 9) Module plan (where code should live)
 
-After implementation, you should have:
+Suggested locations:
+- Window selection: new module `local_mixing/src/algorithms/local_mixing/window.rs` or extend `infra/random/random_data.rs` with a gate-graph sampler.
+- Equivalence oracle: new module `local_mixing/src/algorithms/local_mixing/oracle.rs`.
+- Rewriter and stages: new module `local_mixing/src/algorithms/local_mixing/mixer.rs`.
+- Attacker: new module `local_mixing/src/algorithms/local_mixing/attack.rs`.
+- Metrics harness: new module `local_mixing/src/analysis/local_mixing_metrics.rs` and add summary to `analysis/metrics.rs`.
+- CLI wiring: add a `local-mix2` or upgrade `local-mix` in `local_mixing/src/main.rs`.
 
-- `obfuscate_identity_64w(...) -> Circuit`
-- `reduce_circuit(...) -> Circuit + trace`
-- metrics report per generated identity:
-  - compression ratio
-  - deletion counts
-  - runtime
-  - graph stats (optional)
+---
 
-This supports systematic experiments on “how hard to simplify” under your attacker model.
+## 10) Configuration knobs (implementation-ready)
+
+- `inflation.window_len_min`, `inflation.window_len_max`
+- `inflation.delta_min`, `inflation.delta_max`
+- `inflation.max_active_wires`
+- `kneading.window_schedule` (list of lengths)
+- `kneading.inner_rewrites_per_window`
+- `kneading.max_active_wires`
+- `oracle.use_template_db`, `oracle.use_perm_tables`, `oracle.use_sat`
+- `oracle.perm_table_max_width`, `oracle.template_db_max_width`
+- `attacker.window_len`, `attacker.out_len`, `attacker.trials_per_pass`, `attacker.max_passes`
+- `metrics.sample_count_per_size`, `metrics.seed_count`
+
+---
+
+## 11) Implementation milestones
+
+1. DB audit and coverage report.
+2. WindowSelector (connected + convex) with deterministic sampling and tests.
+3. Oracle MVP.
+4. Inflation stage using small windows and identity-template insertion.
+5. Attacker `attack_peel` and gap curve metrics.
+6. Kneading stage using same-size alternatives (perm tables) and in-window mixing.
+7. Full metrics harness and JSON reporting.
+
+---
+
+## 12) Open decisions (need answers before coding)
+
+- Which DBs are required for first milestone runs: TemplateDB only, perm tables only, or both.
+- Maximum active-wire cap for window sampling, given DB coverage and SAT limits.
+- Whether to keep identity-only targets for phase 1 or allow general permutations.
+- Whether to store multiple same-size alternatives in a new LMDB table to improve kneading.
+
+---
+
+## 13) Success criteria
+
+- Inflation alone increases `CG_hat` at small window sizes but is peelable by `attack_peel`.
+- After kneading, attacker success drops materially at the same budget.
+- Gap curve shifts to larger windows and does not collapse under small-window reduction.
 
 ---

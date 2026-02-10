@@ -17,6 +17,7 @@ use local_mixing::{
         replace::random_canonical_id,
     },
     algorithms::identity_growth::{IdentityGrowthConfig, TemplateSource, grow_identity},
+    algorithms::local_rewrite::{LocalRewriteConfig, PermTableOracle, run_local_rewrite},
     config::ObfuscationConfig,
     infra::circuit::{CircuitSeq, Gate},
     infra::ids_index::build_ids_indexes,
@@ -262,7 +263,13 @@ fn main() {
                 Arg::new("sat")
                     .short('S')
                     .long("sat")
-                    .help("Enable SAT mode")
+                    .help("Enable SAT mode (default: enabled)")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("no-sat")
+                    .long("no-sat")
+                    .help("Disable SAT mode")
                     .action(clap::ArgAction::SetTrue),
             )
             .arg(
@@ -306,6 +313,40 @@ fn main() {
                     .long("config")
                     .value_parser(clap::value_parser!(String))
                     .help("Path to configuration JSON file"),
+            )
+            // --- Wire Shuffle + Bit-Flip (B_{w,s}) Options ---
+            .arg(
+                Arg::new("flip-mode")
+                    .long("flip-mode")
+                    .value_parser(["none", "separate", "embedded"])
+                    .default_value("none")
+                    .help("Bit-flip integration mode: none, separate (Style A), embedded (Style B)"),
+            )
+            .arg(
+                Arg::new("flip-scope")
+                    .long("flip-scope")
+                    .value_parser(["global", "per-stage"])
+                    .default_value("global")
+                    .help("When to apply shuffle: global (once at start) or per-stage"),
+            )
+            .arg(
+                Arg::new("shuffle-seed")
+                    .long("shuffle-seed")
+                    .value_parser(clap::value_parser!(u64))
+                    .help("Random seed for shuffle + bit-flip (for reproducibility)"),
+            )
+            .arg(
+                Arg::new("gadget-library")
+                    .long("gadget-library")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to swap-with-flip gadget library JSON (for Style B)"),
+            )
+            .arg(
+                Arg::new("flip-probability")
+                    .long("flip-probability")
+                    .value_parser(clap::value_parser!(f64))
+                    .default_value("0.5")
+                    .help("Probability of flipping each wire (0.0 - 1.0)"),
             ),
     )
         .subcommand(
@@ -683,6 +724,121 @@ fn main() {
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of mixing rounds"),
                 )
+        )
+        .subcommand(
+            Command::new("local-rewrite")
+                .about("Two-stage local-rewrite obfuscation (inflation + kneading) with metrics")
+                .arg(
+                    Arg::new("wires")
+                        .long("wires")
+                        .default_value("64")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires"),
+                )
+                .arg(
+                    Arg::new("seed")
+                        .long("seed")
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Random seed (0 = random)"),
+                )
+                .arg(
+                    Arg::new("base-depth")
+                        .long("base-depth")
+                        .default_value("40")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Depth for base identity (P · P^-1)"),
+                )
+                .arg(
+                    Arg::new("inflation-steps")
+                        .long("inflation-steps")
+                        .default_value("400")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inflation steps"),
+                )
+                .arg(
+                    Arg::new("inflation-len-min")
+                        .long("inflation-len-min")
+                        .default_value("4")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inflation window length min"),
+                )
+                .arg(
+                    Arg::new("inflation-len-max")
+                        .long("inflation-len-max")
+                        .default_value("10")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inflation window length max"),
+                )
+                .arg(
+                    Arg::new("inflation-delta-min")
+                        .long("inflation-delta-min")
+                        .default_value("2")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inflation length delta min"),
+                )
+                .arg(
+                    Arg::new("inflation-delta-max")
+                        .long("inflation-delta-max")
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inflation length delta max"),
+                )
+                .arg(
+                    Arg::new("kneading-steps")
+                        .long("kneading-steps")
+                        .default_value("400")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Kneading steps"),
+                )
+                .arg(
+                    Arg::new("kneading-lens")
+                        .long("kneading-lens")
+                        .default_value("32,64")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Comma-separated kneading window lengths"),
+                )
+                .arg(
+                    Arg::new("kneading-inner")
+                        .long("kneading-inner")
+                        .default_value("2")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Inner rewrites per kneading step"),
+                )
+                .arg(
+                    Arg::new("max-active-wires")
+                        .long("max-active-wires")
+                        .default_value("7")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Max active wires for window selection"),
+                )
+                .arg(
+                    Arg::new("attack-passes")
+                        .long("attack-passes")
+                        .default_value("50")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Attacker max passes"),
+                )
+                .arg(
+                    Arg::new("attack-trials")
+                        .long("attack-trials")
+                        .default_value("200")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Attacker trials per pass"),
+                )
+                .arg(
+                    Arg::new("attack-out-len")
+                        .long("attack-out-len")
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Attacker replacement length threshold"),
+                )
+                .arg(
+                    Arg::new("report")
+                        .long("report")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to write JSON report"),
+                ),
         )
         .subcommand(
             Command::new("grow-identity")
@@ -1115,6 +1271,9 @@ fn main() {
             if sub.get_flag("sat") {
                 config.sat_mode = true;
             }
+            if sub.get_flag("no-sat") {
+                config.sat_mode = false;
+            }
             if sub.get_flag("single-gate") {
                 config.single_gate_mode = true;
             }
@@ -1126,6 +1285,31 @@ fn main() {
             }
             if sub.get_flag("no-equal") {
                 config.equal_replacement_mode = false;
+            }
+
+            // Overlay shuffle + bit-flip (B_{w,s}) arguments
+            if let Some(flip_mode) = sub.get_one::<String>("flip-mode") {
+                config.shuffle_bitflip.enabled = flip_mode != "none";
+                config.shuffle_bitflip.flip_mode = match flip_mode.as_str() {
+                    "separate" => local_mixing::config::FlipMode::Separate,
+                    "embedded" => local_mixing::config::FlipMode::Embedded,
+                    _ => local_mixing::config::FlipMode::None,
+                };
+            }
+            if let Some(flip_scope) = sub.get_one::<String>("flip-scope") {
+                config.shuffle_bitflip.flip_scope = match flip_scope.as_str() {
+                    "per-stage" => local_mixing::config::FlipScope::PerStage,
+                    _ => local_mixing::config::FlipScope::Global,
+                };
+            }
+            if let Some(seed) = sub.get_one::<u64>("shuffle-seed") {
+                config.shuffle_bitflip.seed = Some(*seed);
+            }
+            if let Some(gadget_lib) = sub.get_one::<String>("gadget-library") {
+                config.shuffle_bitflip.gadget_library_path = Some(std::path::PathBuf::from(gadget_lib));
+            }
+            if let Some(flip_prob) = sub.get_one::<f64>("flip-probability") {
+                config.shuffle_bitflip.flip_probability = *flip_prob;
             }
 
             let lmdb_db_path = sub.get_one::<String>("lmdb-db");
@@ -1484,6 +1668,89 @@ fn main() {
                 1.0
             };
             println!("Compression Ratio: {:.4}", ratio);
+        }
+        Some(("local-rewrite", sub)) => {
+            let wires = *sub.get_one::<usize>("wires").unwrap();
+            let seed = *sub.get_one::<u64>("seed").unwrap();
+            let base_depth = *sub.get_one::<usize>("base-depth").unwrap();
+            let inflation_steps = *sub.get_one::<usize>("inflation-steps").unwrap();
+            let inflation_len_min = *sub.get_one::<usize>("inflation-len-min").unwrap();
+            let inflation_len_max = *sub.get_one::<usize>("inflation-len-max").unwrap();
+            let inflation_delta_min = *sub.get_one::<usize>("inflation-delta-min").unwrap();
+            let inflation_delta_max = *sub.get_one::<usize>("inflation-delta-max").unwrap();
+            let kneading_steps = *sub.get_one::<usize>("kneading-steps").unwrap();
+            let kneading_lens = sub.get_one::<String>("kneading-lens").unwrap();
+            let kneading_inner = *sub.get_one::<usize>("kneading-inner").unwrap();
+            let max_active_wires = *sub.get_one::<usize>("max-active-wires").unwrap();
+            let attack_passes = *sub.get_one::<usize>("attack-passes").unwrap();
+            let attack_trials = *sub.get_one::<usize>("attack-trials").unwrap();
+            let attack_out_len = *sub.get_one::<usize>("attack-out-len").unwrap();
+            let report_path = sub.get_one::<String>("report").map(|s| s.to_string());
+
+            let schedule: Vec<usize> = kneading_lens
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+
+            let mut cfg = LocalRewriteConfig::default();
+            cfg.num_wires = wires;
+            cfg.seed = seed;
+            cfg.base_depth = base_depth;
+            cfg.inflation.steps = inflation_steps;
+            cfg.inflation.len_min = inflation_len_min;
+            cfg.inflation.len_max = inflation_len_max;
+            cfg.inflation.delta_min = inflation_delta_min;
+            cfg.inflation.delta_max = inflation_delta_max;
+            cfg.inflation.max_active_wires = max_active_wires;
+            cfg.kneading.steps = kneading_steps;
+            if !schedule.is_empty() {
+                cfg.kneading.window_schedule = schedule;
+            }
+            cfg.kneading.inner_rewrites = kneading_inner;
+            cfg.kneading.max_active_wires = max_active_wires;
+            cfg.attack.max_passes = attack_passes;
+            cfg.attack.trials_per_pass = attack_trials;
+            cfg.attack.out_len = attack_out_len;
+            cfg.attack.max_active_wires = max_active_wires;
+            cfg.metrics.max_active_wires = max_active_wires;
+
+            let max_len = cfg
+                .inflation
+                .len_max
+                .saturating_add(cfg.inflation.delta_max)
+                .max(cfg.kneading.inner_len_max)
+                .max(cfg.attack.window_len_max);
+
+            let oracle = PermTableOracle::open(Path::new("./db"), max_active_wires, max_len);
+            let mut oracle = match oracle {
+                Some(o) => o,
+                None => {
+                    eprintln!("Perm-table LMDB not found at ./db; cannot run local-rewrite.");
+                    return;
+                }
+            };
+
+            let (circuit, report) = run_local_rewrite(&cfg, &mut oracle);
+
+            println!("Base length: {}", report.base_len);
+            println!("After inflation: {}", report.after_inflation_len);
+            println!("After kneading: {}", report.after_kneading_len);
+            println!(
+                "Attacker reduction: {} gates in {} replacements over {} passes",
+                report.attack.total_gate_reduction,
+                report.attack.total_replacements,
+                report.attack.passes
+            );
+
+            if let Some(path) = report_path {
+                let json = report.to_json();
+                fs::write(path, &json)
+                    .unwrap_or_else(|e| panic!("Failed to write report: {}", e));
+                println!("Saved report");
+            }
+
+            // Print final circuit length only (avoid dumping huge circuits by default)
+            println!("Final circuit length: {}", circuit.gates.len());
         }
         Some(("gen", sub)) => {
             let n: u8 = *sub.get_one("wires").unwrap_or(&64);

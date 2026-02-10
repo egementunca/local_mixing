@@ -27,6 +27,12 @@ Defined in `local_mixing/src/config.rs` and loadable via `--config` for `bbutter
 | `compression_sat_limit` | 1000 | SAT scripts | Timeout/conflict limit for SAT synthesis. |
 | `final_stability_threshold` | 12 | final compression loops | Passes with no change before stopping. |
 | `chunk_split_base` | 1500 | final compression | Chunk size base for parallel compression. |
+| `shuffle_bitflip.enabled` | false | `abbutterfly_big` | Enables pre-mix `B_{w,s}` stage. |
+| `shuffle_bitflip.flip_mode` | `none` | `shuffle_bitflip` | `none`, `separate` (Style A), `embedded` (Style B). |
+| `shuffle_bitflip.flip_scope` | `global` | `abbutterfly_big` | Only `global` is wired; `per-stage` parsed but not implemented. |
+| `shuffle_bitflip.seed` | `None` | `abbutterfly_big` | RNG seed for reproducibility. |
+| `shuffle_bitflip.gadget_library_path` | `None` | `shuffle_bitflip` | JSON gadget library for Style B. |
+| `shuffle_bitflip.flip_probability` | `0.0` | `shuffle_bitflip` | Flip probability for random masks (CLI default `0.5`). |
 | `reducer_active_wire_limit` | 6 | (unused) | Declared but not wired in current reducers. |
 | `reducer_window_sizes` | [4,6,8,10,12,16] | (unused) | Declared but not wired in current reducers. |
 | `lmdb_path` | `db` | (unused) | Local LMDB path; not wired to CLI yet. |
@@ -84,4 +90,3 @@ These are defaults defined directly in `local_mixing/src/main.rs` (not config):
 - `abbutterfly --rounds` default: uses config if omitted.
 - `obfuscate --level` default: 3.
 - `obfuscate --wires` default: 64.
-

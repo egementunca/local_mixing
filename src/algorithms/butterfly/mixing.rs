@@ -3,14 +3,15 @@ use crate::{
         compress, compress_big, compress_big_sat, compress_big_sat_lmdb, expand_big, obfuscate,
         outward_compress, random_id, replace_pairs, replace_sequential_pairs,
     },
-    config::ObfuscationConfig,
+    algorithms::shuffle_bitflip::{ShuffleBitflipGenerator, ShuffleBitflipState},
+    config::{FlipScope, ObfuscationConfig},
     infra::circuit::circuit::CircuitSeq,
     infra::random::random_data::shoot_random_gate,
 };
 // use crate::infra::random::random_data::random_walk_no_skeleton;
 
 use itertools::Itertools;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
 use crate::algorithms::butterfly::replace::random_gate_replacements;
@@ -1459,6 +1460,41 @@ pub fn main_butterfly_big(
         .collect::<Vec<_>>();
 
     let mut current_circuit = c.clone();
+
+    // === Wire Shuffle + Bit-Flip Pre-Mix Stage (B_{w,s}) ===
+    let shuffle_state = if config.shuffle_bitflip.enabled
+        && config.shuffle_bitflip.flip_scope == FlipScope::Global
+    {
+        let mut rng: rand::rngs::StdRng = match config.shuffle_bitflip.seed {
+            Some(seed) => SeedableRng::seed_from_u64(seed),
+            None => SeedableRng::from_rng(&mut rand::rng()),
+        };
+
+        let generator = ShuffleBitflipGenerator::new(n, config.shuffle_bitflip.clone());
+        let (premix_circuit, permutation, flip_mask) = generator.generate_random(&mut rng);
+
+        println!(
+            "Pre-mix B_{{w,s}} applied: {} gates, perm={:?}, flip={:?}",
+            premix_circuit.gates.len(),
+            &permutation[..std::cmp::min(8, permutation.len())],
+            &flip_mask[..std::cmp::min(8, flip_mask.len())]
+        );
+
+        // Prepend the pre-mix circuit
+        let mut combined_gates = premix_circuit.gates;
+        combined_gates.extend(current_circuit.gates.iter().cloned());
+        current_circuit = CircuitSeq { gates: combined_gates };
+
+        // Generate inverse for later
+        let state = ShuffleBitflipState {
+            permutation,
+            flip_mask,
+        };
+        Some(state)
+    } else {
+        None
+    };
+
     let mut post_len = 0;
     let mut count = 0;
     for i in 0..config.rounds {
@@ -1504,6 +1540,29 @@ pub fn main_butterfly_big(
             }
         }
     }
+
+    // === Append inverse B_{w,s}^{-1} if pre-mix was applied ===
+    if let Some(ref state) = shuffle_state {
+        let mut rng: rand::rngs::StdRng = match config.shuffle_bitflip.seed {
+            Some(seed) => SeedableRng::seed_from_u64(seed.wrapping_add(1)), // Different seed for inverse
+            None => SeedableRng::from_rng(&mut rand::rng()),
+        };
+
+        let generator = ShuffleBitflipGenerator::new(n, config.shuffle_bitflip.clone());
+        let inverse_circuit = generator.generate_inverse(
+            &state.permutation,
+            &state.flip_mask,
+            &mut rng,
+        );
+
+        println!(
+            "Post-mix B_{{w,s}}^{{-1}} appended: {} gates",
+            inverse_circuit.gates.len()
+        );
+
+        current_circuit.gates.extend(inverse_circuit.gates);
+    }
+
     println!("Final len: {}", current_circuit.gates.len());
     if let Err(e) = current_circuit.probably_equal(&c, n, 150_000) {
         println!("Warning: The circuits differ somewhere! Error: {:?}", e);

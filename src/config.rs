@@ -1,6 +1,48 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Bit-flip integration mode for wire shuffle
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FlipMode {
+    /// No bit-flips, just wire shuffle
+    #[default]
+    None,
+    /// Style A: explicit X layer after shuffle
+    Separate,
+    /// Style B: swap-with-flip gadgets (embedded)
+    Embedded,
+}
+
+/// Scope for applying wire shuffle + bit-flip
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FlipScope {
+    /// Apply shuffle once at the start (global)
+    #[default]
+    Global,
+    /// Apply shuffle before each stage
+    PerStage,
+}
+
+/// Configuration for wire shuffle + bit-flip pre-mix stage (B_{w,s})
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(default)]
+pub struct ShuffleBitflipConfig {
+    /// Enable the pre-mix shuffle stage
+    pub enabled: bool,
+    /// How to integrate bit-flips
+    pub flip_mode: FlipMode,
+    /// When to apply shuffle
+    pub flip_scope: FlipScope,
+    /// Random seed for reproducibility (None = random)
+    pub seed: Option<u64>,
+    /// Path to swap-with-flip gadget library (JSON)
+    pub gadget_library_path: Option<PathBuf>,
+    /// Flip probability for random mask generation (0.0 - 1.0)
+    pub flip_probability: f64,
+}
+
 /// Main configuration for the `abbutterfly` and `butterfly` obfuscation pipeline
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ObfuscationConfig {
@@ -62,6 +104,11 @@ pub struct ObfuscationConfig {
     /// Enable equal-length replacements (blurring)
     pub equal_replacement_mode: bool,
 
+    // --- Wire Shuffle + Bit-Flip ---
+    /// Configuration for pre-mix B_{w,s} stage
+    #[serde(default)]
+    pub shuffle_bitflip: ShuffleBitflipConfig,
+
     // --- System ---
     /// Path to LMDB database directory
     pub lmdb_path: PathBuf,
@@ -92,7 +139,34 @@ impl Default for ObfuscationConfig {
             reducer_window_sizes: vec![4, 6, 8, 10, 12, 16],
             pair_replacement_mode: true,
             equal_replacement_mode: true,
+            shuffle_bitflip: ShuffleBitflipConfig::default(),
             lmdb_path: PathBuf::from("db"),
+        }
+    }
+}
+
+impl ShuffleBitflipConfig {
+    /// Create config for Style A (explicit flip layer)
+    pub fn style_a(seed: Option<u64>) -> Self {
+        Self {
+            enabled: true,
+            flip_mode: FlipMode::Separate,
+            flip_scope: FlipScope::Global,
+            seed,
+            gadget_library_path: None,
+            flip_probability: 0.5,
+        }
+    }
+
+    /// Create config for Style B (embedded swap-with-flip gadgets)
+    pub fn style_b(gadget_library_path: PathBuf, seed: Option<u64>) -> Self {
+        Self {
+            enabled: true,
+            flip_mode: FlipMode::Embedded,
+            flip_scope: FlipScope::Global,
+            seed,
+            gadget_library_path: Some(gadget_library_path),
+            flip_probability: 0.5,
         }
     }
 }

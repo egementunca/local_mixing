@@ -21,6 +21,7 @@ Primary workflows:
 - `local_mixing/src/algorithms/butterfly/replace.rs`: identity generation, pair replacement, random gate replacement, convex subcircuit selection, expand/compress logic, SAT/LMDB compression, timers.
 - `local_mixing/src/algorithms/annealing/anneal.rs`: simulated annealing engine (moves, energy, stats). Not wired to the CLI yet.
 - `local_mixing/src/algorithms/annealing/local.rs`: local mixing MVP and local reducer; used by `local-mix` CLI.
+- `local_mixing/src/algorithms/shuffle_bitflip.rs`: wire shuffle + bit-flip generator (`B_{w,s}`) for pre-mix obfuscation.
 - `local_mixing/src/algorithms/annealing/README.md`: current status of the annealing engine and local-mix MVP.
 - `local_mixing/src/obfuscate/config.rs`: level presets and core config for the gadget-based pipeline.
 - `local_mixing/src/obfuscate/gadgets.rs`: commutator and identity gadget generators.
@@ -180,6 +181,14 @@ Defines a full simulated annealing engine (moves, energy functions, stats), but 
 - Alignment: DTW in `analysis/alignment/mod.rs` with a distance matrix over traced states.
 - Metrics: `ObfReport` and `BenchmarkStats` for obfuscation evaluation.
 
+### 4.10 Wire shuffle + bit-flip pre-mix (B_{w,s})
+- Generator: `local_mixing/src/algorithms/shuffle_bitflip.rs` implements `B_{w,s}` with Style A (explicit flip layer) or Style B (swap-with-flip gadgets).
+- Integration: `abbutterfly_big` prepends a random `B_{w,s}` when enabled and appends its inverse post-mix.
+- Modes: `flip_mode=none` disables pre-mix shuffle.
+- Modes: `flip_mode=separate` adds shuffle + explicit X layer (Style A).
+- Modes: `flip_mode=embedded` uses swap-with-flip gadgets (Style B) with JSON gadget library.
+- `flip_scope` is currently parsed but **only `global` is wired** (per-stage is not implemented yet).
+
 ## 5. CLI Reference (local_mixing_bin)
 
 Core commands:
@@ -191,9 +200,11 @@ Core commands:
 - `butterfly -r ROUNDS`: standard butterfly.
 - `bbutterfly`: big butterfly with CLI flags for shooting, ancillas, single-gate, config.
 - `abbutterfly`: asymmetric big butterfly with `--sat`, `--bookendless`, `--lmdb-db`, `--config`.
+- `abbutterfly` optional pre-mix flags: `--flip-mode`, `--flip-scope`, `--shuffle-seed`, `--gadget-library`, `--flip-probability`.
 - `compress -p PATH -n WIRES`: run final compression and write `compressed.txt`.
 - `obfuscate -i INPUT -o OUTPUT`: gadget-based obfuscator, optional JSON report.
 - `local-mix`: generate a 64-wire identity via local mixing and report reducer ratio.
+- `local-rewrite`: two-stage local rewrite (inflation + kneading) with attack-aligned metrics.
 - `heatmap --c1 --c2 --num_wires --inputs`: output heatmap JSON to stdout.
 - `align --c1 --c2 -n --inputs`: output alignment JSON to stdout.
 - `reverse -s SRC -d DST`: reverse gate order and write output.
@@ -217,6 +228,7 @@ Key fields:
 - Intensity: `shooting_count`, `shooting_count_inner`, `rounds`.
 - Modes: `sat_mode`, `no_ancilla_mode`, `single_gate_mode`, `skip_compression`.
 - Compression: `compression_window_size`, `compression_window_size_sat`, `compression_sat_limit`, `final_stability_threshold`, `chunk_split_base`.
+- Shuffle + bit-flip: `shuffle_bitflip.enabled`, `flip_mode`, `flip_scope`, `seed`, `gadget_library_path`, `flip_probability`.
 - Reducer: `reducer_active_wire_limit`, `reducer_window_sizes`.
 - System: `lmdb_path`.
 
