@@ -1895,7 +1895,8 @@ pub fn replace_and_compress_big(
                     "db/circuits.db",
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
-                .expect("Failed to open read-only connection");
+                .or_else(|_| Connection::open_in_memory())
+                .expect("Failed to open SQLite connection");
                 let (col, shoot, zero, trav) =
                     replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
@@ -1954,7 +1955,8 @@ pub fn replace_and_compress_big(
                     "db/circuits.db",
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
-                .expect("Failed to open read-only connection");
+                .or_else(|_| Connection::open_in_memory())
+                .expect("Failed to open SQLite connection");
 
                 compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs, &config).gates
             })

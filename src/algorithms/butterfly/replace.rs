@@ -875,13 +875,13 @@ pub fn compress_big(
         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
         table_7m4
     );
-    let mut stmt_7m4 = conn.prepare(&query_limit_7m4).unwrap();
+    let mut stmt_7m4 = conn.prepare(&query_limit_7m4).ok();
     let table_6m5 = format!("n{}m{}", 6, 5);
     let query_limit_6m5 = format!(
         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
         table_6m5
     );
-    let mut stmt_6m5 = conn.prepare(&query_limit_6m5).unwrap();
+    let mut stmt_6m5 = conn.prepare(&query_limit_6m5).ok();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -977,8 +977,8 @@ pub fn compress_big(
             sub_num_wires,
             env,
             dbs,
-            &mut stmt_7m4,
-            &mut stmt_6m5,
+            stmt_7m4.as_mut(),
+            stmt_6m5.as_mut(),
             conn,
         );
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1053,8 +1053,8 @@ pub fn compress_lmdb<'a>(
     n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, lmdb::Database>,
-    prepared_stmt: &mut rusqlite::Statement<'a>,
-    prepared_stmt2: &mut rusqlite::Statement<'a>,
+    mut prepared_stmt: Option<&mut rusqlite::Statement<'a>>,
+    mut prepared_stmt2: Option<&mut rusqlite::Statement<'a>>,
     conn: &Connection,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
@@ -1116,7 +1116,7 @@ pub fn compress_lmdb<'a>(
         CANONICALIZE_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let max = if n == 7 {
-            3
+            4
         } else if n == 5 || n == 6 {
             5
         } else if n == 4 {
@@ -1127,41 +1127,60 @@ pub fn compress_lmdb<'a>(
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
 
+        let compute_canonical = || {
+            let perm_start = Instant::now();
+            let sub_perm = subcircuit.permutation(n);
+            PERMUTATION_TIME.fetch_add(perm_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            let canon_start = Instant::now();
+            let canon_perm = get_canonical(&sub_perm, bit_shuf);
+            CANON_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
+        };
+
         let (canon_perm_blob, canon_shuf_blob) = if sub_m <= max
             && ((n == 6 && sub_m == 5) || (n == 7 && sub_m == 4))
         {
             if n == 7 && sub_m == 4 {
-                let stmt: &mut Statement<'_> = &mut *prepared_stmt;
+                if let Some(stmt_ref) = prepared_stmt.as_mut() {
+                    let stmt: &mut Statement<'_> = *stmt_ref;
+                    let row_start = Instant::now();
+                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                        .query_row([&subcircuit.repr_blob()], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        });
 
-                let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
-                    .query_row([&subcircuit.repr_blob()], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    });
+                    SROW_FETCH_TIME
+                        .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                SROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-                match blobs_result {
-                    Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                    match blobs_result {
+                        Ok(b) => b,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("SQL query failed: {:?}", e),
+                    }
+                } else {
+                    compute_canonical()
                 }
             } else if n == 6 && sub_m == 5 {
-                let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
+                if let Some(stmt_ref) = prepared_stmt2.as_mut() {
+                    let stmt: &mut Statement<'_> = *stmt_ref;
+                    let row_start = Instant::now();
+                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
+                        .query_row([&subcircuit.repr_blob()], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        });
 
-                let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt
-                    .query_row([&subcircuit.repr_blob()], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    });
+                    SIXROW_FETCH_TIME
+                        .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                SIXROW_FETCH_TIME
-                    .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-                match blobs_result {
-                    Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                    match blobs_result {
+                        Ok(b) => b,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("SQL query failed: {:?}", e),
+                    }
+                } else {
+                    compute_canonical()
                 }
             } else {
                 let table = format!("n{}m{}", n, sub_m);
@@ -1188,36 +1207,30 @@ pub fn compress_lmdb<'a>(
             }
         } else if sub_m <= max && (n >= 4) {
             let db_name = format!("n{}m{}perms", n, min);
-            let db = match dbs.get(&db_name) {
-                Some(db) => *db,
-                None => continue,
-            };
+            if let Some(db) = dbs.get(&db_name) {
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
-            let txn = env.begin_ro_txn().expect("lmdb ro txn");
-
-            let row_start = Instant::now();
-            let val = match txn.get(db, &subcircuit.repr_blob()) {
-                Ok(v) => v,
-                Err(lmdb::Error::NotFound) => continue,
-                Err(e) => panic!("LMDB get failed: {:?}", e),
-            };
-            LROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            let perm = val[..perm_len].to_vec();
-            let shuf = val[perm_len..].to_vec();
-
-            (perm, shuf)
+                let row_start = Instant::now();
+                match txn.get(*db, &subcircuit.repr_blob()) {
+                    Ok(val) => {
+                        LROW_FETCH_TIME
+                            .fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                        let perm = val[..perm_len].to_vec();
+                        let shuf = val[perm_len..].to_vec();
+                        (perm, shuf)
+                    }
+                    Err(lmdb::Error::NotFound) => {
+                        // Fallback: compute canonical directly when perm table is missing coverage.
+                        compute_canonical()
+                    }
+                    Err(e) => panic!("LMDB get failed: {:?}", e),
+                }
+            } else {
+                // Fallback: compute canonical directly when perm table is missing.
+                compute_canonical()
+            }
         } else {
-            // Permutation + canonicalization
-            let perm_start = Instant::now();
-            let sub_perm = subcircuit.permutation(n);
-            PERMUTATION_TIME.fetch_add(perm_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            let canon_start = Instant::now();
-            let canon_perm = get_canonical(&sub_perm, bit_shuf);
-            CANON_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
+            compute_canonical()
         };
 
         let prefix = canon_perm_blob.as_slice();
@@ -1731,13 +1744,13 @@ pub fn compress_big_ancillas(
         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
         table
     );
-    let mut stmt = conn.prepare(&query_limit).unwrap();
+    let mut stmt = conn.prepare(&query_limit).ok();
     let table = format!("n{}m{}", 6, 5);
     let query_limit = format!(
         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
         table
     );
-    let mut stmt2 = conn.prepare(&query_limit).unwrap();
+    let mut stmt2 = conn.prepare(&query_limit).ok();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -1820,8 +1833,8 @@ pub fn compress_big_ancillas(
             sub_num_wires,
             env,
             dbs,
-            &mut stmt,
-            &mut stmt2,
+            stmt.as_mut(),
+            stmt2.as_mut(),
             conn,
         );
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -2996,10 +3009,10 @@ pub fn sequential_compress_big(
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-    let mut stmt = conn.prepare(&query_limit).unwrap();
+    let mut stmt = conn.prepare(&query_limit).ok();
     let table2 = format!("n{}m{}", 6, 5);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
-    let mut stmt2 = conn.prepare(&query_limit).unwrap();
+    let mut stmt2 = conn.prepare(&query_limit).ok();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -3092,8 +3105,8 @@ pub fn sequential_compress_big(
             sub_num_wires,
             env,
             dbs,
-            &mut stmt,
-            &mut stmt2,
+            stmt.as_mut(),
+            stmt2.as_mut(),
             conn,
         );
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);

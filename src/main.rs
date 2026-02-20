@@ -5,6 +5,19 @@ use plotters::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 
 use local_mixing::algorithms::butterfly::mixing::open_all_dbs;
+
+// LMDB database names for check-lmdb command
+const LMDB_DB_NAMES: &[&str] = &[
+    "perm_w3", "perm_w4", "perm_w5", "perm_w6", "perm_w7",
+    "n3m1perms", "n3m2perms", "n3m3perms", "n3m4perms",
+    "n4m1perms", "n4m2perms", "n4m3perms", "n4m4perms", "n4m5perms", "n4m6perms",
+    "n5m1perms", "n5m2perms", "n5m3perms", "n5m4perms", "n5m5perms",
+    "n6m1perms", "n6m2perms", "n6m3perms", "n6m4perms",
+    "n7m1perms", "n7m2perms", "n7m3perms",
+    "ids_n3", "ids_n4", "ids_n5", "ids_n6", "ids_n7", "ids_n8",
+    "ids_n9", "ids_n10", "ids_n11", "ids_n12", "ids_n13", "ids_n14", "ids_n15", "ids_n16",
+    "ids_rev", "ids_wit_prefilter",
+];
 use local_mixing::algorithms::butterfly::replace::compress_big_ancillas;
 use local_mixing::analysis::alignment::{distance_matrix, dtw_alignment, trace_states};
 use local_mixing::{
@@ -25,13 +38,137 @@ use local_mixing::{
         build_from_sql, build_initial_table, generate_heatmap_data, main_random, random_circuit,
     },
 };
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use std::{
     fs::{self},
-    io::Write,
+    io::{self, BufWriter, Write},
     path::Path,
 };
+
+struct BitPacker<W: Write> {
+    out: W,
+    buf: u64,
+    bits: u8,
+}
+
+impl<W: Write> BitPacker<W> {
+    fn new(out: W) -> Self {
+        Self { out, buf: 0, bits: 0 }
+    }
+
+    fn push_bits(&mut self, mut value: u64, mut nbits: u8) -> io::Result<()> {
+        while nbits > 0 {
+            let space = 64 - self.bits;
+            let take = nbits.min(space);
+            let part = if take == 64 {
+                value
+            } else {
+                value & ((1u64 << take) - 1)
+            };
+
+            self.buf |= part << self.bits;
+            self.bits += take;
+
+            if take == 64 {
+                value = 0;
+                nbits = 0;
+            } else {
+                value >>= take;
+                nbits -= take;
+            }
+
+            while self.bits >= 8 {
+                let byte = (self.buf & 0xFF) as u8;
+                self.out.write_all(&[byte])?;
+                self.buf >>= 8;
+                self.bits -= 8;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.bits > 0 {
+            let byte = (self.buf & 0xFF) as u8;
+            self.out.write_all(&[byte])?;
+            self.buf = 0;
+            self.bits = 0;
+        }
+        self.out.flush()
+    }
+}
+
+fn run_rng_stream<W: Write>(
+    writer: W,
+    wires: usize,
+    gates: usize,
+    samples: usize,
+    seed: Option<u64>,
+    mode: &str,
+    burn_in: usize,
+) -> io::Result<()> {
+    if wires == 0 || wires > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wires must be in 1..=64",
+        ));
+    }
+
+    let mask = if wires == 64 {
+        u64::MAX
+    } else {
+        (1u64 << wires) - 1
+    };
+
+    if let Some(seed) = seed {
+        fastrand::seed(seed);
+    }
+
+    let circuit = random_circuit(wires as u8, gates);
+    let rng_seed = seed.unwrap_or_else(|| rand::rng().random());
+    let mut rng = StdRng::seed_from_u64(rng_seed ^ 0x9e3779b97f4a7c15);
+
+    let mut packer = BitPacker::new(writer);
+
+    match mode {
+        "random-input" => {
+            for _ in 0..burn_in {
+                let input = rng.random::<u64>() & mask;
+                let _ = Gate::evaluate_index_list(input as usize, &circuit.gates);
+            }
+            for _ in 0..samples {
+                let input = rng.random::<u64>() & mask;
+                let output = Gate::evaluate_index_list(input as usize, &circuit.gates) as u64;
+                packer.push_bits(output & mask, wires as u8)?;
+            }
+        }
+        "counter" => {
+            // Counter mode: C(0), C(1), C(2), ..., C(k)
+            // Input is a simple counter modulo 2^n
+            for i in 0..samples {
+                let input = (i as u64) & mask;
+                let output = Gate::evaluate_index_list(input as usize, &circuit.gates) as u64;
+                packer.push_bits(output & mask, wires as u8)?;
+            }
+        }
+        _ => {
+            // iterate mode (default)
+            let mut state = rng.random::<u64>() & mask;
+            for _ in 0..burn_in {
+                state = Gate::evaluate_index_list(state as usize, &circuit.gates) as u64 & mask;
+            }
+            for _ in 0..samples {
+                state = Gate::evaluate_index_list(state as usize, &circuit.gates) as u64 & mask;
+                packer.push_bits(state, wires as u8)?;
+            }
+        }
+    }
+
+    packer.flush()
+}
+
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")
@@ -225,6 +362,31 @@ fn main() {
             ),
     )
     .subcommand(
+        Command::new("db-coverage")
+            .about("Report SQLite + LMDB coverage for compression tables")
+            .arg(
+                Arg::new("lmdb")
+                    .long("lmdb")
+                    .default_value("./db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("LMDB directory containing rainbow/perm/ids tables"),
+            )
+            .arg(
+                Arg::new("sqlite")
+                    .long("sqlite")
+                    .default_value("./db/circuits.db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("SQLite circuits.db path"),
+            )
+            .arg(
+                Arg::new("max-scan")
+                    .long("max-scan")
+                    .default_value("100000")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Max entries to scan per LMDB DB (0 = full scan)"),
+            ),
+    )
+    .subcommand(
         Command::new("abbutterfly")
             .about("Obfuscate and compress an existing circuit via asymmetric butterfly_big method")
             .arg(
@@ -366,6 +528,58 @@ fn main() {
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of gates"),
                 )
+        )
+        .subcommand(
+            Command::new("rng-stream")
+                .about("Generate an RNG bitstream from a random circuit")
+                .arg(
+                    Arg::new("wires")
+                        .long("wires")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("32")
+                        .help("Number of wires (1..=64)"),
+                )
+                .arg(
+                    Arg::new("gates")
+                        .long("gates")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("1000")
+                        .help("Number of gates in the random circuit"),
+                )
+                .arg(
+                    Arg::new("samples")
+                        .long("samples")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("100000")
+                        .help("Number of output states to stream"),
+                )
+                .arg(
+                    Arg::new("seed")
+                        .long("seed")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Seed for reproducibility (circuit + stream)"),
+                )
+                .arg(
+                    Arg::new("mode")
+                        .long("mode")
+                        .value_parser(["iterate", "random-input", "counter"])
+                        .default_value("iterate")
+                        .help("Stream mode: iterate (x_{t+1}=C(x_t)), random-input, or counter (C(0),C(1),...)"),
+                )
+                .arg(
+                    Arg::new("burn-in")
+                        .long("burn-in")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("0")
+                        .help("Discard this many outputs before streaming"),
+                )
+                .arg(
+                    Arg::new("out")
+                        .long("out")
+                        .short('o')
+                        .value_parser(clap::value_parser!(String))
+                        .help("Output file path (default: stdout)"),
+                ),
         )
         .subcommand(
             Command::new("heatmap")
@@ -1133,12 +1347,23 @@ fn main() {
             println!("Running RAC on circuit with {} wires, {} gates", n, c.gates.len());
 
             // Open DB connection
-            let mut conn = Connection::open_with_flags(
-                "db/circuits.db",
+            let sqlite_path = "db/circuits.db";
+            let mut conn = match Connection::open_with_flags(
+                sqlite_path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open DB (read-only)");
-            conn.execute_batch(
+            ) {
+                Ok(conn) => conn,
+                Err(err) => {
+                    eprintln!(
+                        "WARNING: failed to open {} ({}). Continuing without SQLite tables.",
+                        sqlite_path, err
+                    );
+                    Connection::open_in_memory()
+                        .expect("Failed to open in-memory SQLite connection")
+                }
+            };
+            // Best-effort tuning; safe to ignore if running in-memory.
+            let _ = conn.execute_batch(
                 "
                 PRAGMA synchronous = NORMAL;
                 PRAGMA journal_mode = WAL;
@@ -1146,13 +1371,13 @@ fn main() {
                 PRAGMA cache_size = -200000;
                 PRAGMA locking_mode = EXCLUSIVE;
                 ",
-            )
-            .unwrap();
+            );
 
             // Open LMDB environment
             let lmdb = "./db";
             let env = lmdb::Environment::new()
-                .set_max_dbs(60)
+                // RAC opens many named DBs (ids_*, perm tables, etc). Keep headroom.
+                .set_max_dbs(120)
                 .set_map_size(700 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1186,6 +1411,131 @@ fn main() {
                 "ids-index done: dbs_scanned={} ids_seen={} rev_inserted={} token_inserted={}",
                 stats.dbs_scanned, stats.ids_seen, stats.rev_inserted, stats.token_inserted
             );
+        }
+        Some(("db-coverage", sub)) => {
+            let lmdb_path: &String = sub.get_one("lmdb").unwrap();
+            let sqlite_path: &String = sub.get_one("sqlite").unwrap();
+            let max_scan: usize = *sub.get_one("max-scan").unwrap();
+
+            let count_lmdb_entries = |txn: &lmdb::RoTransaction<'_>, db: lmdb::Database| -> (usize, bool) {
+                let mut cursor = match txn.open_ro_cursor(db) {
+                    Ok(c) => c,
+                    Err(_) => return (0, false),
+                };
+                let mut count = 0usize;
+                let mut truncated = false;
+                for _ in cursor.iter_start() {
+                    count += 1;
+                    if max_scan > 0 && count >= max_scan {
+                        truncated = true;
+                        break;
+                    }
+                }
+                (count, truncated)
+            };
+
+            println!("=== LMDB Coverage ===");
+            if Path::new(lmdb_path).exists() {
+                let env = lmdb::Environment::new()
+                    .set_max_readers(512)
+                    .set_max_dbs(200)
+                    .set_map_size(700 * 1024 * 1024 * 1024)
+                    .open(Path::new(lmdb_path))
+                    .expect("Failed to open lmdb");
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+
+                let mut present = 0usize;
+                let mut missing = 0usize;
+
+                for name in LMDB_DB_NAMES.iter() {
+                    match unsafe { txn.open_db(Some(name)) } {
+                        Ok(db) => {
+                            let (count, truncated) = count_lmdb_entries(&txn, db);
+                            if truncated {
+                                println!("{:<18} entries >= {:>8}", name, count);
+                            } else {
+                                println!("{:<18} entries {:>12}", name, count);
+                            }
+                            present += 1;
+                        }
+                        Err(lmdb::Error::NotFound) => {
+                            println!("{:<18} MISSING", name);
+                            missing += 1;
+                        }
+                        Err(e) => panic!("Failed to open LMDB database {}: {:?}", name, e),
+                    }
+                }
+
+                println!(
+                    "LMDB coverage: {} present, {} missing (path: {})",
+                    present, missing, lmdb_path
+                );
+                if max_scan > 0 {
+                    println!(
+                        "LMDB counts are capped at max-scan={} per DB (use --max-scan 0 for full scan)",
+                        max_scan
+                    );
+                }
+            } else {
+                println!("LMDB path not found: {}", lmdb_path);
+            }
+
+            println!("\n=== SQLite Coverage ===");
+            if Path::new(sqlite_path).exists() {
+                let conn = Connection::open_with_flags(
+                    sqlite_path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open SQLite db");
+
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'n[0-9]*m[0-9]*' ORDER BY name",
+                    )
+                    .expect("Failed to query sqlite_master");
+
+                let table_iter = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .expect("Failed to read table names");
+
+                let mut total_tables = 0usize;
+                let mut total_rows: i64 = 0;
+
+                for table in table_iter {
+                    let table = table.expect("Bad table name");
+                    let query = format!("SELECT COUNT(*) FROM {}", table);
+                    let count: i64 = conn
+                        .query_row(&query, [], |row| row.get(0))
+                        .unwrap_or(0);
+                    println!("{:<18} rows {:>12}", table, count);
+                    total_tables += 1;
+                    total_rows += count;
+                }
+
+                if total_tables == 0 {
+                    println!("No n*m tables found in {}", sqlite_path);
+                } else {
+                    println!(
+                        "SQLite coverage: {} tables, {} total rows (path: {})",
+                        total_tables, total_rows, sqlite_path
+                    );
+                }
+
+                for critical in ["n6m5", "n7m4"] {
+                    let exists: rusqlite::Result<i64> = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                        [critical],
+                        |row| row.get(0),
+                    );
+                    match exists {
+                        Ok(0) => println!("WARNING: missing critical table {}", critical),
+                        Ok(_) => {}
+                        Err(_) => println!("WARNING: unable to verify {}", critical),
+                    }
+                }
+            } else {
+                println!("SQLite path not found: {}", sqlite_path);
+            }
         }
         Some(("bbutterfly", sub)) => {
             // let rounds: usize = *sub.get_one("rounds").unwrap();
@@ -1757,6 +2107,49 @@ fn main() {
             let l: usize = *sub.get_one("length").unwrap_or(&100);
             let c = random_circuit(n, l);
             print!("{}", c.repr());
+        }
+        Some(("rng-stream", sub)) => {
+            let wires = *sub.get_one::<usize>("wires").unwrap();
+            let gates = *sub.get_one::<usize>("gates").unwrap();
+            let samples = *sub.get_one::<usize>("samples").unwrap();
+            let seed = sub.get_one::<u64>("seed").copied();
+            let mode = sub
+                .get_one::<String>("mode")
+                .map(|s| s.as_str())
+                .unwrap_or("iterate");
+            let burn_in = *sub.get_one::<usize>("burn-in").unwrap();
+            let out_path = sub.get_one::<String>("out");
+
+            let result = if let Some(path) = out_path {
+                match fs::File::create(path) {
+                    Ok(file) => run_rng_stream(
+                        BufWriter::new(file),
+                        wires,
+                        gates,
+                        samples,
+                        seed,
+                        mode,
+                        burn_in,
+                    ),
+                    Err(err) => Err(io::Error::new(io::ErrorKind::Other, err)),
+                }
+            } else {
+                let stdout = io::stdout();
+                let handle = stdout.lock();
+                run_rng_stream(
+                    BufWriter::new(handle),
+                    wires,
+                    gates,
+                    samples,
+                    seed,
+                    mode,
+                    burn_in,
+                )
+            };
+
+            if let Err(err) = result {
+                eprintln!("rng-stream failed: {}", err);
+            }
         }
         Some(("heatmap", sub)) => {
             let n = *sub.get_one::<usize>("num_wires").unwrap();
