@@ -38,6 +38,13 @@ Input Circuit C
       │
       ▼
 ┌─────────────────────────────────────┐
+│  Phase 0 (optional): Pre-mix        │
+│  Apply B_{w,s} shuffle + bit-flip   │
+│  Track (w,s) for inverse bookend    │
+└─────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
 │  Phase 1: Gate-Level Wrapping       │
 │  For each gate g in C:              │
 │    B_i := R_{i-1}^{-1} · g · R_i    │
@@ -64,6 +71,12 @@ Input Circuit C
 │  Phase 4: Final Compression         │
 │  Chunked sliding-window compression │
 │  until stability threshold reached  │
+└─────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
+│  Phase 5 (optional): Post-mix       │
+│  Append B_{w,s}^{-1} if applied     │
 └─────────────────────────────────────┘
       │
       ▼
@@ -95,8 +108,10 @@ $$
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `rounds` | 3 | Number of complete obfuscation iterations. Each round: wrap → compress → merge. |
-| `wires` | 8 | Circuit width (number of qubits/wires). Range: 3–64. |
-| `initial_gates` | 20 | Starting gate count for random circuit generation. |
+| `wires` | 32 | Circuit width (CLI `--n` default). |
+| `path` | required | Input circuit file path (CLI `--path`). |
+
+Note: `initial_gates` applies to generators (e.g., `gen`), not `abbutterfly` which requires `--path`.
 
 ### 3.2 Structure Parameters
 
@@ -126,6 +141,23 @@ shoot_random_gate(circuit, rounds):
            - Stop when hitting a COLLISION (gates that share a wire)
            - Gates that don't share wires can swap (they commute)
 ```
+
+### 3.4 Pre-mix Shuffle + Bit-Flip (B_{w,s}) (optional)
+
+When enabled, `abbutterfly_big` prepends a shuffle+bit-flip circuit `B_{w,s}` and appends its inverse after mixing.
+This preserves functionality while increasing structural complexity.
+
+Modes:
+- `flip-mode=none`: no shuffle/bit-flip stage.
+- `flip-mode=separate`: Style A (shuffle then explicit X layer).
+- `flip-mode=embedded`: Style B (swap-with-flip gadgets).
+
+Flags:
+- `--flip-mode {none,separate,embedded}`
+- `--flip-scope {global,per-stage}` (only `global` is currently wired)
+- `--shuffle-seed <u64>`
+- `--gadget-library <path>` (Style B)
+- `--flip-probability <0.0..1.0>`
 
 **Collision check**: Two gates collide if `g1.target ∈ g2.wires` or any control overlaps.
 
@@ -454,16 +486,20 @@ local_mixing_bin align --c1 "circuit1" --c2 "circuit2" -n 8 --inputs 16
 
 ```bash
 # Standard ABButterfly obfuscation
-local_mixing_bin abbutterfly -n 8 -m 20 --rounds 3 --shooting 500000
+local_mixing_bin abbutterfly --path input.gate -n 32 --rounds 3 --shooting 500000
 
 # With SAT compression and TemplateDB
-local_mixing_bin abbutterfly -n 8 -m 20 --sat --lmdb-db ../data/collection.lmdb
+local_mixing_bin abbutterfly --path input.gate -n 32 --sat --lmdb-db ../data/collection.lmdb
 
 # Inflation-only (no compression)
-local_mixing_bin abbutterfly -n 8 -m 20 --skip-compression
+local_mixing_bin abbutterfly --path input.gate -n 32 --skip-compression
 
 # Bookendless mode
-local_mixing_bin abbutterfly -n 8 -m 20 --bookendless
+local_mixing_bin abbutterfly --path input.gate -n 32 --bookendless
+
+# Shuffle + bit-flip (Style B)
+local_mixing_bin abbutterfly --path input.gate -n 32 -r 3 \
+  --flip-mode embedded --gadget-library ../share/swap_flip_gadgets.json --shuffle-seed 42
 ```
 
 ---

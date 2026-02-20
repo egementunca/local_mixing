@@ -22,6 +22,7 @@ Primary workflows:
 - `local_mixing/src/algorithms/annealing/anneal.rs`: simulated annealing engine (moves, energy, stats). Not wired to the CLI yet.
 - `local_mixing/src/algorithms/annealing/local.rs`: local mixing MVP and local reducer; used by `local-mix` CLI.
 - `local_mixing/src/algorithms/shuffle_bitflip.rs`: wire shuffle + bit-flip generator (`B_{w,s}`) for pre-mix obfuscation.
+- `local_mixing/src/algorithms/local_rewrite.rs`: experimental local-rewrite pipeline (inflation + kneading + metrics).
 - `local_mixing/src/algorithms/annealing/README.md`: current status of the annealing engine and local-mix MVP.
 - `local_mixing/src/obfuscate/config.rs`: level presets and core config for the gadget-based pipeline.
 - `local_mixing/src/obfuscate/gadgets.rs`: commutator and identity gadget generators.
@@ -204,7 +205,7 @@ Core commands:
 - `compress -p PATH -n WIRES`: run final compression and write `compressed.txt`.
 - `obfuscate -i INPUT -o OUTPUT`: gadget-based obfuscator, optional JSON report.
 - `local-mix`: generate a 64-wire identity via local mixing and report reducer ratio.
-- `local-rewrite`: two-stage local rewrite (inflation + kneading) with attack-aligned metrics.
+- `local-rewrite`: two-stage local rewrite (inflation + kneading) with attack-aligned metrics (experimental).
 - `heatmap --c1 --c2 --num_wires --inputs`: output heatmap JSON to stdout.
 - `align --c1 --c2 -n --inputs`: output alignment JSON to stdout.
 - `reverse -s SRC -d DST`: reverse gate order and write output.

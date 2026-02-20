@@ -16,5 +16,12 @@ This folder contains the current documentation for the `local_mixing` codebase. 
 - `local_mixing/src/algorithms/annealing/README.md`: current status of the annealing engine and local-mix MVP.
 - `local_mixing/local_mix_notes_future_plan.md`: roadmap notes for reducer/obfuscator co-design.
 
+## Test gating (important)
+Some tests require local databases or generated artifacts, and slow/long-running tests are gated.
+Use these env vars to opt in:
+- `LOCAL_MIXING_DB_TESTS=1`
+- `LOCAL_MIXING_SLOW_TESTS=1`
+- `LOCAL_MIXING_ARTIFACT_TESTS=1`
+
 ## Legacy or historical references
 - `local_mixing/docs/ARCHITECTURE.md`: older layout; kept for historical context.

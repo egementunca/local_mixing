@@ -19,6 +19,11 @@ This document summarizes the major architectural and functional changes introduc
 - CLI: `obfuscate` subcommand.
 - Code: `local_mixing/src/obfuscate/*`.
 
+### D. Local-rewrite (experimental)
+- Two-stage local rewrite (inflation + kneading) with attack-aligned metrics.
+- CLI: `local-rewrite` (experimental).
+- Code: `local_mixing/src/algorithms/local_rewrite.rs`.
+
 ## 2. Infrastructure upgrades
 
 ### A. Database abstractions
@@ -39,8 +44,15 @@ This document summarizes the major architectural and functional changes introduc
 - Centralized `ObfuscationConfig` for butterfly pipelines.
 - `ObfConfig` for the gadget-based obfuscator.
 - JSON config loading for `bbutterfly` / `abbutterfly`.
+- Added `shuffle_bitflip` config and CLI flags for optional `B_{w,s}` pre-mix.
 
-## 4. CLI surface changes
+## 4. Test ergonomics
+- DB/slow/artifact tests are now gated by env vars:
+  - `LOCAL_MIXING_DB_TESTS`
+  - `LOCAL_MIXING_SLOW_TESTS`
+  - `LOCAL_MIXING_ARTIFACT_TESTS`
+
+## 5. CLI surface changes
 
 New/expanded commands:
 - `bbutterfly`, `abbutterfly`, `local-mix`, `obfuscate`, `align`, `heatmap`, `compress`, `wiredot`.
@@ -49,6 +61,5 @@ Notable mismatches:
 - `anneal` is **not** currently exposed as a CLI subcommand.
 - `explore` and `binload` are declared in the CLI but have no handler in `main.rs`.
 
-## 5. Scripts and experiments
+## 6. Scripts and experiments
 - Added a suite of Python scripts under `local_mixing/scripts/` for experiments, plotting, and database inspection.
-

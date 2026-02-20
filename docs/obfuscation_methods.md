@@ -52,6 +52,15 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 - Mechanics: reverses gate order; since gates are self-inverse, this is the circuit inverse.
 - Code: `local_mixing/src/main.rs` (`reverse`).
 
+### 1.8 Pre-mix Shuffle + Bit-Flip (B_{w,s}) (optional)
+- Mechanics: prepend `B_{w,s}` before mixing and append its inverse after mixing.
+- Modes:
+  - `flip-mode=none`: disable stage.
+  - `flip-mode=separate`: Style A (shuffle then explicit X layer).
+  - `flip-mode=embedded`: Style B (swap-with-flip gadgets).
+- Controls: `--flip-mode`, `--flip-scope` (only `global` wired), `--shuffle-seed`, `--gadget-library`, `--flip-probability`.
+- Code: `local_mixing/src/algorithms/shuffle_bitflip.rs` and `abbutterfly_big` in `local_mixing/src/algorithms/butterfly/mixing.rs`.
+
 ## 2. Butterfly Variants and Local Mixing
 
 ### 2.1 `butterfly`
@@ -82,6 +91,13 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 ### 2.7 `obfuscate`
 - Pipeline: segmentation -> commutator gadget injection -> noise to target overhead -> `simple_compress` -> optional verification.
 - Code: `local_mixing/src/obfuscate/passes.rs`.
+
+### 2.8 `local-rewrite` (experimental)
+- Pipeline: two-stage local rewrite (inflation + kneading) with attack-aligned metrics.
+- Uses a perm-table oracle (LMDB) when available; otherwise falls back to conservative local moves.
+- Intended as an experimental, theory-aligned prototype; not part of the main production obfuscation schemes.
+- Design is motivated by the local-rewrite framework and attack-based metrics in internal notes.
+- Code: `local_mixing/src/algorithms/local_rewrite.rs` and CLI `local-rewrite`.
 
 ## 3. Reducer and Attacker Models
 

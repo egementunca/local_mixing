@@ -6,6 +6,7 @@ This document compares the primary obfuscation schemes in `local_mixing` and tie
 **Implementation**: `local_mixing/src/algorithms/butterfly/mixing.rs` and `local_mixing/src/algorithms/butterfly/replace.rs`
 
 ### Core architecture (current code)
+0. **Optional pre-mix**: `B_{w,s}` shuffle + bit-flip stage (if enabled).
 1. **Local perturbation**: `shoot_random_gate` reorders gates via commuting moves.
 2. **Identity injection**: `replace_pairs` (and optional `random_gate_replacements`) substitutes adjacent pairs or single gates with identity templates.
 3. **Block wrapping**: each gate is wrapped with random `R`/`R_inv` blocks (chained in `abutterfly_big` to avoid symmetry).
@@ -57,3 +58,14 @@ This document compares the primary obfuscation schemes in `local_mixing` and tie
 | **DB usage** | Perm tables + TemplateDB | Optional | None |
 | **CLI status** | Active | Not wired | Active |
 
+Note: `local-rewrite` is experimental and documented separately below.
+
+---
+
+## 5. Experimental: Local-rewrite (inflation + kneading)
+**Implementation**: `local_mixing/src/algorithms/local_rewrite.rs`
+
+- Two-stage rewrite pipeline with an attack-aligned metrics loop.
+- Uses perm-table oracle when available; otherwise degrades gracefully.
+- Exposed via CLI `local-rewrite`.
+- Treated as an experimental research path, not a production scheme.

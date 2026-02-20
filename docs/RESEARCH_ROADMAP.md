@@ -163,51 +163,14 @@ def exhaust_generate(
 
 ### Current State (RightPanel.tsx)
 
-```tsx
-// Line 15: Three tabs already exist
-type PanelTab = 'skeleton' | 'database' | 'analysis';
+This has been implemented. The Database tab now calls the unified search endpoint
+and supports loading a result onto the canvas.
 
-// Line 65-79: Database search is stubbed with TODO
-const handleSearch = async () => {
-  // TODO: Implement actual API call to ECA57 database
-  await new Promise((r) => setTimeout(r, 500));
-  setSearchResults([
-    { id: '1', gates: 4, width: 3, isIdentity: true },
-    // ... mock data
-  ]);
-};
-```
+Key pieces:
+- UI: `identity-factory-ui/src/components/playground-v2/RightPanel.tsx`
+- API: `/api/v1/search/circuits` (unified search endpoint)
 
-### What Needs Fixing
-
-1. **API endpoint** — Need `/api/v1/circuits/search` that queries real DB
-2. **Result format** — Define response schema
-3. **Load action** — "Load to Canvas" should work
-4. **Integration** — Selected result should appear in circuit editor
-
-### Implementation Plan
-
-```typescript
-// 1. Add API call in RightPanel.tsx
-const handleSearch = async () => {
-  const response = await fetch(`/api/v1/circuits/search?${params}`);
-  const data = await response.json();
-  setSearchResults(data.circuits);
-};
-
-// 2. Add load handler
-const handleLoadCircuit = async (circuitId: string) => {
-  const response = await fetch(`/api/v1/circuits/${circuitId}`);
-  const circuit = await response.json();
-  onLoadCircuit(circuit); // Prop from parent
-};
-
-// 3. Backend endpoint (identity-factory-api)
-@router.get("/circuits/search")
-async def search_circuits(wires: int = None, max_gates: int = None):
-    # Query SQLite or LMDB
-    pass
-```
+If this regresses, re-check the UI search wiring and the API endpoint shape.
 
 ---
 
