@@ -81,7 +81,7 @@ SWEEP_CONFIGS = {
         "gates": [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000],
         "replicates": 100,
         "samples": 50_000_000,    # ~191MB for 32 wires
-        "burn_in": 1000,
+        "burn_in": 0,             # only relevant for iterate mode
         "dieharder_tests": CORE_TESTS,
         "max_weak": 1,
     },
@@ -90,7 +90,7 @@ SWEEP_CONFIGS = {
         "gates": [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000],
         "replicates": 100,
         "samples": 50_000_000,
-        "burn_in": 1000,
+        "burn_in": 0,
         "dieharder_tests": EXTENDED_TESTS,
         "max_weak": 1,
     },
@@ -99,7 +99,7 @@ SWEEP_CONFIGS = {
         "gates": [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 8000],
         "replicates": 100,
         "samples": 100_000_000,   # ~381MB for 32 wires
-        "burn_in": 10000,
+        "burn_in": 0,
         "dieharder_tests": ALL_TESTS,
         "max_weak": 0,
     },
@@ -1050,7 +1050,8 @@ subcommands:
     p_worker.add_argument("--stream-mode",
                           choices=["iterate", "random-input", "counter"],
                           default="counter")
-    p_worker.add_argument("--burn-in", type=int, default=1000)
+    p_worker.add_argument("--burn-in", type=int, default=0,
+                          help="Burn-in samples (only used by iterate mode, ignored in counter)")
     p_worker.add_argument("--max-weak", type=int, default=1)
     p_worker.add_argument("--test-ids", type=str, default=None,
                           help="Comma-separated dieharder test IDs")

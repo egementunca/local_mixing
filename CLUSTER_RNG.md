@@ -49,9 +49,10 @@ make -j4
 | Stream mode | `counter` | Single-application PRP test (always) |
 | Test suite | `quick` (7 core tests) | IDs: 0,2,3,8,15,100,101 |
 | Replicates | 100 per (n,m) point | Different seed = different random circuit |
-| Burn-in | 1000 | Discarded initial outputs |
 | Max weak | 1 | Allow 1 WEAK result per replicate |
 | Pipe mode | always | No temp files, unlimited data |
+
+Note: burn-in is not used in counter mode (each output C(i) is independent).
 
 ### Dieharder Tests Used (quick mode)
 
