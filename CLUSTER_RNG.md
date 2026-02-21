@@ -1,303 +1,357 @@
 # RNG Sweep: Cluster Deployment Guide (BU SCC)
 
-Statistical testing of random circuits as pseudorandom generators via dieharder.
-All tests use **counter mode** (C(0), C(1), ..., C(k)) — the correct single-application PRP test.
+Statistical testing of random circuits as pseudorandom generators via dieharder and NIST STS.
+
+Two standard block cipher modes (NIST SP 800-38A):
+- **CTR (Counter) mode**: `C(0), C(1), ..., C(k)` — single application per output. The harder PRP test. **Primary.**
+- **OFB (Output Feedback) mode**: `IV → C(IV) → C(C(IV)) → ...` — cumulative re-application (= iterate mode). Easier test, used in the USE report. **Secondary, for comparison.**
+
+PRP (Pseudorandom Permutation) is the *property* being tested, not a mode.
 
 ## Overview
 
 We test whether a random circuit C on n wires, with m gates (gate 57: `x_a ^= x_b OR NOT x_c`),
-acts as a pseudorandom permutation by feeding its outputs to the dieharder test battery.
-The key quantity is **m\*(n)**: the minimum gate count where all dieharder tests pass consistently.
+acts as a pseudorandom permutation by feeding its outputs to statistical test batteries.
+The key quantity is **m\*(n)**: the minimum gate count where all tests pass consistently.
 
 Each (n, m, seed) triple is independent — embarrassingly parallel, ideal for SGE array jobs.
 
-## 1. Environment Setup
+---
+
+## Phase 1: Coarse Scan (7 core dieharder tests, counter mode) — COMPLETE
+
+### Results (R=100 per point, counter mode, pipe mode)
+
+| Width | gates | Pass rate | | gates | Pass rate | | gates | Pass rate | | gates | Pass rate |
+|-------|-------|-----------|---|-------|-----------|---|-------|-----------|---|-------|-----------|
+| **32** | 200 | 0% | | 250 | 0% | | 300 | 1% | | 350 | 9% |
+| | 400 | 39% | | 450 | 72% | | 500 | 90% | | 600 | 97% |
+| **48** | 300 | 0% | | 400 | 0% | | 500 | 3% | | 600 | 32% |
+| | 700 | 67% | | 800 | 91% | | 1000 | 95% | | 1200 | 97% |
+| **64** | 400 | 0% | | 600 | 0% | | 800 | 17% | | 1000 | 74% |
+| | 1200 | 96% | | 1500 | 98% | | 2000 | 99% | | 2500 | 98% |
+| **96** | 600 | 0% | | 1000 | 2% | | 1500 | 71% | | 2000 | 98% |
+| | 2500 | 95% | | 3000 | 99% | | 4000 | 100% | | 5000 | 98% |
+| **128** | 1000 | 0% | | 1500 | 6% | | 2000 | 73% | | 3000 | 100% |
+| | 4000 | 100% | | 5000 | 100% | | 6000 | 100% | | 8000 | 100% |
+
+### m\*(n) Estimates (95% threshold)
+
+| Width (n) | m\*(n) | Gates/wire | Transition region |
+|-----------|--------|------------|-------------------|
+| 32 | ~600 | 18.8 | 350–600 |
+| 48 | ~1000 | 20.8 | 600–1000 |
+| 64 | ~1200 | 18.8 | 800–1200 |
+| 96 | ~2000 | 20.8 | 1500–2000 |
+| 128 | ~3000 | 23.4 | 2000–3000 |
+
+**Observations**: Scaling is roughly m\*(n) ≈ 20n. Pass rates plateau at 95–99% even at high gate
+counts (stochastic noise at R=100 with max_weak=1). The bottleneck test is consistently
+`sts_monobit` — it's the last to pass in the transition region.
+
+---
+
+## Phase 2: Transition Refinement (denser gate counts) — TODO
+
+Add gate counts within the identified transition regions to pin down m\*(n) precisely.
+
+| Width (n) | New gate counts | Rationale |
+|-----------|----------------|-----------|
+| 32 | 525, 550, 575 | Between 500 (90%) and 600 (97%) |
+| 48 | 650, 750, 850, 900, 950 | Between 600 (32%) and 1000 (95%) |
+| 64 | 900, 1100 | Between 800 (17%) and 1200 (96%) |
+| 96 | 1750, 2250 | Around 2000 (98%) |
+| 128 | 2250, 2500, 2750 | Between 2000 (73%) and 3000 (100%) |
+
+**Total Phase 2 jobs:** ~14 new gate counts × 100 replicates = **1,400 jobs**
 
 ```bash
-# On BU SCC login node
+# Example: refine w32 transition
+python3 scripts/rng_sweep.py submit \
+    --mode quick --stream-mode counter \
+    --wires 32 --gates 525 550 575 \
+    --replicates 100 \
+    --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+    --script-path "$SCRIPT" \
+    --results-dir /scratch/$USER/rng_sweep_w32_p2 \
+    --time 01:00:00 --memory 4G --job-name rng_w32_p2
+```
+
+---
+
+## Phase 3: Full Dieharder Battery (all good tests, counter mode) — TODO
+
+Phase 1 used only 7 core tests (IDs: 0,2,3,8,15,100,101). The USE report (Chamon et al.)
+ran the **complete dieharder battery** (~114 individual tests across 27 test families).
+We need to verify that the remaining tests don't shift m\*(n).
+
+### Test Coverage
+
+Run all dieharder tests with "Good" reliability. Exclude:
+- ID 5 (diehard_opso) — Suspect
+- ID 6 (diehard_oqso) — Suspect
+- ID 7 (diehard_dna) — Suspect
+- ID 14 (diehard_sums) — Do Not Use
+
+The script's `--mode full` already uses `ALL_TESTS` which includes all 27 good test families.
+
+### What to Run
+
+Not every (n, m) point needs the full battery. Run at **3 strategic gate counts per width**:
+one below transition, one at transition, one well above.
+
+| Width | Below | At transition | Above |
+|-------|-------|---------------|-------|
+| 32 | 400 | 550 | 800 |
+| 48 | 600 | 850 | 1200 |
+| 64 | 800 | 1100 | 1500 |
+| 96 | 1500 | 2000 | 3000 |
+| 128 | 2000 | 2750 | 4000 |
+
+**R=20 replicates** per point (sufficient to check if any new test shifts m\*).
+
+**Total Phase 3 jobs:** 5 widths × 3 gates × 20 replicates = **300 jobs**
+
+**Estimated wall time per job:** Full battery takes ~30–60 min (vs ~10 min for 7 tests).
+Request `--time 02:00:00`.
+
+```bash
+python3 scripts/rng_sweep.py submit \
+    --mode full --stream-mode counter \
+    --wires 32 --gates 400 550 800 \
+    --replicates 20 \
+    --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+    --script-path "$SCRIPT" \
+    --results-dir /scratch/$USER/rng_full_w32 \
+    --time 02:00:00 --memory 4G --job-name rng_full_w32
+```
+
+---
+
+## Phase 4: NIST STS (SP 800-22) — TODO
+
+The USE report also ran the full **NIST Statistical Test Suite** (188 tests across 15 categories),
+producing "% of Accepted Sequences" plots comparable to AES evaluation. We should replicate
+this for direct comparison.
+
+### NIST STS Tests (15 categories, 188 p-values)
+
+| # | Test | p-values | Notes |
+|---|------|----------|-------|
+| 1 | Frequency (Monobit) | 1 | Also in dieharder (100) |
+| 2 | Frequency Within a Block | 1 | NOT in dieharder |
+| 3 | Runs | 1 | Also in dieharder (101) |
+| 4 | Longest Run of Ones | 1 | NOT in dieharder |
+| 5 | Binary Matrix Rank | 1 | Similar to dieharder (2,3) |
+| 6 | Discrete Fourier Transform (Spectral) | 1 | NOT in dieharder |
+| 7 | Non-overlapping Template Matching | 148 | NOT in dieharder |
+| 8 | Overlapping Template Matching | 1 | NOT in dieharder |
+| 9 | Maurer's Universal Statistical | 1 | NOT in dieharder |
+| 10 | Linear Complexity | 1 | NOT in dieharder |
+| 11 | Serial | 2 | Also in dieharder (102) |
+| 12 | Approximate Entropy | 1 | NOT in dieharder |
+| 13 | Cumulative Sums | 2 | NOT in dieharder |
+| 14 | Random Excursions | 8 | NOT in dieharder |
+| 15 | Random Excursions Variant | 18 | NOT in dieharder |
+
+Tests **NOT in dieharder**: 2, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15 — these are why we need NIST STS separately.
+
+### Setup
+
+```bash
+# Build NIST STS from source (on cluster login node)
 cd ~
+wget https://csrc.nist.gov/CSRC/media/Projects/Random-Bit-Generation/documents/sts-2_1_2.zip
+unzip sts-2_1_2.zip
+cd sts-2.1.2
+make
+# Binary: ./assess
+```
 
-# Clone repositories (if not already present)
-git clone <repo-url> research-group
-cd research-group/local_mixing
+### Workflow per (n, m, seed)
 
-# Build the Rust binary
-module load rust   # or ensure cargo is available
+1. Generate binary data: 100 sequences × 1M bits = 100M bits = 12.5 MB
+```bash
+local_mixing_bin rng-stream --wires 32 --gates 500 --seed 42 \
+    --samples 3125000 --mode counter --out data.bin
+# 3,125,000 samples × 32 bits = 100M bits = 100 sequences × 1M bits
+```
+
+2. Run NIST STS (scripted, non-interactive):
+```bash
+printf "0\ndata.bin\n1\n100\n1000000\n0\n" | ./assess 1000000
+# Reads: file input, filename, all tests, 100 streams, 1M bits each, binary format
+```
+
+3. Parse `experiments/AlgorithmTesting/finalAnalysisReport.txt`
+
+### What to Run
+
+Same strategic gate counts as Phase 3 (3 per width, R=20). Only need to run at and above
+the transition — NIST STS on a clearly-failing circuit isn't informative.
+
+| Width | At transition | Above |
+|-------|---------------|-------|
+| 32 | 550 | 800 |
+| 48 | 850 | 1200 |
+| 64 | 1100 | 1500 |
+| 96 | 2000 | 3000 |
+| 128 | 2750 | 4000 |
+
+**Total: 10 configurations × 20 replicates = 200 jobs**
+
+### Plots to Generate
+
+Replicate the USE report style:
+- **"% of Accepted Sequences" per NIST test** — scatter plot with test number on x-axis
+  (like their Figure on page 5). Shows proportion of sequences passing each of 188 tests.
+  Add threshold line at 96.92% (NIST minimum).
+- **Comparison with AES** — side-by-side plot (if we run AES through the same pipeline)
+
+---
+
+## Phase 5: Iterate Mode (OFB) Comparison — TODO
+
+The professor's group tested their cipher in **OFB mode** (output feedback), which is our
+**iterate mode**: `x → C(x) → C(C(x)) → ...`. Running iterate mode at the same configurations
+lets us:
+1. Show that iterate mode gives a lower (easier) threshold than counter mode
+2. Directly compare with the professor's methodology
+3. Confirm our counter mode is the harder, more meaningful test
+
+### What to Run
+
+Same gate counts as Phase 1, but with `--stream-mode iterate`. Only need R=20
+(the comparison is qualitative, not precision-critical).
+
+```bash
+python3 scripts/rng_sweep.py submit \
+    --mode quick --stream-mode iterate \
+    --wires 32 --gates 200 300 400 500 600 \
+    --replicates 20 \
+    --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+    --script-path "$SCRIPT" \
+    --results-dir /scratch/$USER/rng_iterate_w32 \
+    --time 01:00:00 --memory 4G --job-name rng_iter_w32
+```
+
+Repeat for all 5 widths. **Total: ~40 gate counts × 20 replicates = 800 jobs**
+
+---
+
+## Environment Setup
+
+### Rust Binary
+
+```bash
+cd ~/research-group/local_mixing
+module load rust
 cargo build --release
-# Binary: target/release/local_mixing_bin
+# Binary: target/release/local_mixing_bin (supports 1-128 wires)
 
-# Verify it works
-./target/release/local_mixing_bin rng-stream --wires 32 --gates 100 --samples 10 --seed 42 --mode counter | xxd | head
+# Verify:
+./target/release/local_mixing_bin rng-stream --wires 32 --gates 100 \
+    --samples 10 --seed 42 --mode counter | xxd | head
+```
 
-# Build dieharder from source
+### Dieharder
+
+```bash
 cd ~
 git clone <dieharder-repo> dieharder
 cd dieharder
 ./configure --prefix=$HOME/dieharder-install
 make -j4
-# Binary: dieharder/dieharder (or wherever it lands)
-# Verify:
-./dieharder/dieharder -l   # should list all tests
+# Binary: dieharder/dieharder
+./dieharder/dieharder -l   # should list all 27+ tests
 ```
 
-## 2. Test Plan
-
-### Parameters
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Stream mode | `counter` | Single-application PRP test (always) |
-| Test suite | `quick` (7 core tests) | IDs: 0,2,3,8,15,100,101 |
-| Replicates | 100 per (n,m) point | Different seed = different random circuit |
-| Max weak | 1 | Allow 1 WEAK result per replicate |
-| Pipe mode | always | No temp files, unlimited data |
-
-Note: burn-in is not used in counter mode (each output C(i) is independent).
-
-### Dieharder Tests Used (quick mode)
-
-| ID | Test Name | What it checks |
-|----|-----------|----------------|
-| 0  | diehard_birthdays | Spacing/clustering in random numbers |
-| 2  | diehard_rank_32x32 | Linear dependence (matrix rank) |
-| 3  | diehard_rank_6x8 | Finer linear structure |
-| 8  | diehard_count_1s_str | Bit frequency bias |
-| 15 | diehard_runs | Sequential structure (2 p-values) |
-| 100 | sts_monobit | Basic frequency (NIST) |
-| 101 | sts_runs | Run-length structure (NIST) |
-
-### Gate Count Ranges by Width
-
-Based on local n=32 results: m\*(32) is between 300 and 500 in counter mode.
-We estimate m\*(n) scales roughly as O(n * f(n)), so larger widths need more gates.
-
-**Phase 1: Coarse scan** — find the approximate transition for each width.
-
-| Width (n) | Gate counts to test | Est. wall time/replicate | Rationale |
-|-----------|-------------------|--------------------------|-----------|
-| 32 | 200, 250, 300, 350, 400, 450, 500, 600 | ~3 min | Transition known at 300-500, dense scan |
-| 48 | 300, 400, 500, 600, 700, 800, 1000, 1200 | ~5 min | Expected transition ~500-1000 |
-| 64 | 400, 600, 800, 1000, 1200, 1500, 2000, 2500 | ~7 min | Expected transition ~800-1500 |
-| 96 | 600, 1000, 1500, 2000, 2500, 3000, 4000, 5000 | ~10 min | Expected transition ~1500-3000 |
-| 128 | 1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000 | ~15 min | Expected transition ~2000-5000 |
-
-**Total Phase 1 jobs:** 5 widths x 8 gate counts x 100 replicates = **4,000 jobs**
-
-Each job: 1 core, 4GB RAM, ~15 min worst case. Wall time: request `01:00:00` for safety.
-
-**Phase 2 (if needed):** After Phase 1, refine around the transition with denser gate counts.
-For example, if n=64 transitions between 1000-1200, add gate counts 1050, 1100, 1150.
-
-### Smart Stopping
-
-Once all 100 replicates pass at some gate count m, the transition is below m.
-We still test higher gate counts to confirm, but you can stop a width early if:
-- The 3 highest gate counts all show 100% pass rate
-- This gives confidence that m\*(n) has been found
-
-## 3. Submitting Jobs
-
-### Generate and Submit (per width)
-
-It's recommended to submit **separate jobs per width** so you can monitor and stop early.
+### NIST STS (Phase 4)
 
 ```bash
-cd ~/research-group/local_mixing
+cd ~
+wget https://csrc.nist.gov/CSRC/media/Projects/Random-Bit-Generation/documents/sts-2_1_2.zip
+unzip sts-2_1_2.zip
+cd sts-2.1.2
+make
+# Binary: ./assess
+# Test: echo -n "test" | ./assess 32
+```
 
+---
+
+## Job Submission Reference
+
+### Common Variables
+
+```bash
 BINARY="$HOME/research-group/local_mixing/target/release/local_mixing_bin"
-DIEHARDER="$HOME/dieharder/dieharder"  # adjust path
+DIEHARDER="$HOME/dieharder/dieharder"
 SCRIPT="$HOME/research-group/local_mixing/scripts/rng_sweep.py"
-
-# --- Width 32 (dense scan around known transition) ---
-python3 scripts/rng_sweep.py submit \
-    --mode quick --stream-mode counter \
-    --wires 32 \
-    --gates 200 250 300 350 400 450 500 600 \
-    --replicates 100 \
-    --binary-path "$BINARY" \
-    --dieharder-path "$DIEHARDER" \
-    --script-path "$SCRIPT" \
-    --results-dir /scratch/$USER/rng_sweep_w32 \
-    --time 01:00:00 --memory 4G \
-    --job-name rng_w32
-
-# --- Width 48 ---
-python3 scripts/rng_sweep.py submit \
-    --mode quick --stream-mode counter \
-    --wires 48 \
-    --gates 300 400 500 600 700 800 1000 1200 \
-    --replicates 100 \
-    --binary-path "$BINARY" \
-    --dieharder-path "$DIEHARDER" \
-    --script-path "$SCRIPT" \
-    --results-dir /scratch/$USER/rng_sweep_w48 \
-    --time 01:00:00 --memory 4G \
-    --job-name rng_w48
-
-# --- Width 64 ---
-python3 scripts/rng_sweep.py submit \
-    --mode quick --stream-mode counter \
-    --wires 64 \
-    --gates 400 600 800 1000 1200 1500 2000 2500 \
-    --replicates 100 \
-    --binary-path "$BINARY" \
-    --dieharder-path "$DIEHARDER" \
-    --script-path "$SCRIPT" \
-    --results-dir /scratch/$USER/rng_sweep_w64 \
-    --time 01:00:00 --memory 4G \
-    --job-name rng_w64
-
-# --- Width 96 ---
-python3 scripts/rng_sweep.py submit \
-    --mode quick --stream-mode counter \
-    --wires 96 \
-    --gates 600 1000 1500 2000 2500 3000 4000 5000 \
-    --replicates 100 \
-    --binary-path "$BINARY" \
-    --dieharder-path "$DIEHARDER" \
-    --script-path "$SCRIPT" \
-    --results-dir /scratch/$USER/rng_sweep_w96 \
-    --time 02:00:00 --memory 4G \
-    --job-name rng_w96
-
-# --- Width 128 ---
-python3 scripts/rng_sweep.py submit \
-    --mode quick --stream-mode counter \
-    --wires 128 \
-    --gates 1000 1500 2000 3000 4000 5000 6000 8000 \
-    --replicates 100 \
-    --binary-path "$BINARY" \
-    --dieharder-path "$DIEHARDER" \
-    --script-path "$SCRIPT" \
-    --results-dir /scratch/$USER/rng_sweep_w128 \
-    --time 02:00:00 --memory 4G \
-    --job-name rng_w128
 ```
 
-### Dry Run First
+### Submit Commands by Phase
 
-Add `--dry-run` to any submit command to generate the scripts without submitting:
+See each phase section above for specific commands. General pattern:
+
 ```bash
-python3 scripts/rng_sweep.py submit ... --dry-run
-# Then inspect the generated files:
-ls /scratch/$USER/rng_sweep_w32/
-# submit_sweep.sh  task_manifest.tsv  sweep_config.json  logs/  results/
+python3 scripts/rng_sweep.py submit \
+    --mode {quick|full} \
+    --stream-mode {counter|iterate} \
+    --wires W1 W2 ... \
+    --gates G1 G2 ... \
+    --replicates R \
+    --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+    --script-path "$SCRIPT" \
+    --results-dir /scratch/$USER/DIRNAME \
+    --time HH:MM:SS --memory 4G --job-name NAME
 ```
 
-### Monitor Jobs
+Add `--dry-run` to generate scripts without submitting.
+
+### Monitor and Collect
 
 ```bash
-qstat -u $USER                              # List all your jobs
-qstat -u $USER | grep rng_w32               # Filter by width
-tail -f /scratch/$USER/rng_sweep_w32/logs/*  # Follow logs
+qstat -u $USER                                    # List all jobs
 ls /scratch/$USER/rng_sweep_w32/results/ | wc -l  # Count completed tasks
-```
 
-## 4. Collecting Results
-
-After jobs complete (or while they run for partial results):
-
-```bash
-# Collect per-width results
+# Collect results:
 python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w32
-python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w48
-python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w64
-python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w96
-python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w128
 
-# Each produces: rng_sweep_results.json + rng_sweep_summary.txt
-
-# Check for missing tasks (and get resubmit command):
+# Check for missing tasks:
 python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w32 --require-complete
-# If tasks are missing, it prints: "Resubmit: qsub -t 42,85-87 submit_sweep.sh"
-```
 
-### Merge All Widths (for combined plotting)
-
-To create a single results JSON with all widths, use the merge script:
-
-```bash
+# Merge widths:
 python3 scripts/merge_rng_results.py \
-    /scratch/$USER/rng_sweep_w32/rng_sweep_results.json \
-    /scratch/$USER/rng_sweep_w48/rng_sweep_results.json \
-    /scratch/$USER/rng_sweep_w64/rng_sweep_results.json \
-    /scratch/$USER/rng_sweep_w96/rng_sweep_results.json \
-    /scratch/$USER/rng_sweep_w128/rng_sweep_results.json \
-    --output /scratch/$USER/rng_sweep_all.json
+    w32/rng_sweep_results.json w48/rng_sweep_results.json ... \
+    --output rng_sweep_all.json
+
+# Plot:
+python3 scripts/plot_rng_sweep.py --results rng_sweep_all.json
 ```
 
-## 5. Plotting
+---
 
-```bash
-# Plot per-width results
-python3 scripts/plot_rng_sweep.py --results /scratch/$USER/rng_sweep_w32/rng_sweep_results.json
+## Job Summary
 
-# Plot combined (all widths on one graph)
-python3 scripts/plot_rng_sweep.py --results /scratch/$USER/rng_sweep_all.json
+| Phase | What | Jobs | Est. wall time | Status |
+|-------|------|------|----------------|--------|
+| 1 | Coarse scan (7 tests, counter) | 4,000 | 1–2 hr | **COMPLETE** |
+| 2 | Transition refinement (7 tests, counter) | 1,400 | 1 hr | TODO |
+| 3 | Full dieharder battery (27 tests, counter) | 300 | 2 hr | TODO |
+| 4 | NIST STS (188 tests, counter) | 200 | 1 hr | TODO |
+| 5 | Iterate mode comparison (7 tests, iterate) | 800 | 1 hr | TODO |
+| **Total** | | **6,700** | | |
 
-# Output: pass_rate_vs_gates.png, per_test_pass_rate_w*.png, pvalues_scatter.png, etc.
-```
+---
 
-## 6. Results Tracking
-
-### Expected Output Structure
-
-```
-/scratch/$USER/
-  rng_sweep_w32/
-    sweep_config.json       # Sweep parameters (auto-generated)
-    task_manifest.tsv       # Task ID -> (wires, gates, seed, rep_idx)
-    submit_sweep.sh         # SGE job script (auto-generated)
-    logs/                   # Per-task SGE logs
-    results/                # Per-replicate JSON files
-      w32_g200_r0.json      # One file per (wires, gates, replicate)
-      w32_g200_r1.json
-      ...
-    rng_sweep_results.json  # Aggregated results (after collect)
-    rng_sweep_summary.txt   # Text summary table
-  rng_sweep_w48/
-    ...
-  rng_sweep_all.json        # Combined all-width results (after merge)
-```
-
-### Result File Schema (per replicate)
-
-```json
-{
-  "wires": 32,
-  "gates": 500,
-  "seed": 42,
-  "replicate_index": 0,
-  "mode": "counter",
-  "overall_pass": true,
-  "num_passed": 8,
-  "num_weak": 0,
-  "num_failed": 0,
-  "num_tests": 8,
-  "duration_sec": 199.1,
-  "tests": [
-    {"test_name": "diehard_birthdays", "test_id": 0, "p_value": 0.143, "assessment": "PASSED"},
-    ...
-  ]
-}
-```
-
-### What Success Looks Like
-
-For each width n, the collected results should show:
-- **0% pass rate** at low gate counts (circuit too shallow to mix)
-- **Sharp transition** over a narrow range of gate counts
-- **100% pass rate** at high gate counts (circuit is pseudorandom)
-
-The transition point m\*(n) is where pass rate first hits 95%+.
-
-## 7. Troubleshooting
+## Troubleshooting
 
 ### "Binary not found"
-Ensure the binary path in submit is absolute: `$HOME/research-group/local_mixing/target/release/local_mixing_bin`
+Ensure absolute path: `$HOME/research-group/local_mixing/target/release/local_mixing_bin`
 
 ### "dieharder not found"
-Build dieharder from source and point to the built binary (not an installed one).
+Build dieharder from source and point to the built binary.
 
 ### Task failures
 Check logs: `cat /scratch/$USER/rng_sweep_w32/logs/rng_w32.*.42.log`
@@ -305,14 +359,10 @@ Common issues: timeout (increase `--time`), memory (increase `--memory`).
 
 ### Resubmit failed tasks
 ```bash
-# collect will report missing tasks with the exact resubmit command:
 python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w32 --require-complete
 # Output: "Resubmit: qsub -t 42,85-87 /scratch/$USER/rng_sweep_w32/submit_sweep.sh"
 ```
 
-### Partial results
-You can collect and plot partial results while jobs are still running:
-```bash
-python3 scripts/rng_sweep.py collect --results-dir /scratch/$USER/rng_sweep_w32
-# Will warn about missing tasks but proceed with available data
-```
+### Full dieharder times out
+Some tests in the full battery (e.g., rgb_lagged_sum with high ntup) are very data-hungry.
+Request `--time 03:00:00` if 2hr isn't enough. The worker has a 1200s per-test timeout.
