@@ -71,8 +71,9 @@ def plot_overall_pass_rate(data, out_dir):
     for r in data["results"]:
         by_wires.setdefault(r["wires"], []).append(r)
 
-    colors = {16: "#e74c3c", 24: "#e67e22", 32: "#2ecc71", 48: "#3498db", 64: "#9b59b6"}
-    markers = {16: "s", 24: "D", 32: "o", 48: "^", 64: "v"}
+    colors = {16: "#e74c3c", 24: "#e67e22", 32: "#2ecc71", 48: "#3498db",
+              64: "#9b59b6", 96: "#1abc9c", 128: "#e91e63"}
+    markers = {16: "s", 24: "D", 32: "o", 48: "^", 64: "v", 96: "P", 128: "X"}
 
     for wires in sorted(by_wires.keys()):
         configs = sorted(by_wires[wires], key=lambda c: c["gates"])
@@ -86,7 +87,8 @@ def plot_overall_pass_rate(data, out_dir):
 
     ax.set_xlabel("Number of Gates (m)", fontsize=13)
     ax.set_ylabel("Pass Rate (%)", fontsize=13)
-    ax.set_title("Dieharder Pass Rate vs Gate Count\n(all tests combined, iterate mode)", fontsize=14)
+    stream_mode = data.get("stream_mode", "iterate")
+    ax.set_title(f"Dieharder Pass Rate vs Gate Count\n(all tests combined, {stream_mode} mode)", fontsize=14)
     ax.set_xscale("log")
     ax.set_ylim(-5, 105)
     ax.set_yticks([0, 25, 50, 75, 100])
@@ -128,8 +130,9 @@ def plot_per_test_pass_rate(data, out_dir):
 
         ax.set_xlabel("Number of Gates (m)", fontsize=13)
         ax.set_ylabel("Pass Rate (%)", fontsize=13)
+        stream_mode = data.get("stream_mode", "iterate")
         ax.set_title(f"Per-Test Pass Rate vs Gate Count (n={wires} wires)\n"
-                     f"({n_tests} tests, iterate mode)", fontsize=14)
+                     f"({n_tests} tests, {stream_mode} mode)", fontsize=14)
         ax.set_xscale("log")
         ax.set_ylim(-5, 105)
         ax.set_yticks([0, 25, 50, 75, 100])

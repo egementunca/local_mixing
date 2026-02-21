@@ -89,6 +89,15 @@ impl<W: Write> BitPacker<W> {
         Ok(())
     }
 
+    fn push_bits_u128(&mut self, value: u128, nbits: u8) -> io::Result<()> {
+        if nbits <= 64 {
+            self.push_bits(value as u64, nbits)
+        } else {
+            self.push_bits(value as u64, 64)?;
+            self.push_bits((value >> 64) as u64, nbits - 64)
+        }
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if self.bits > 0 {
             let byte = (self.buf & 0xFF) as u8;
@@ -100,6 +109,23 @@ impl<W: Write> BitPacker<W> {
     }
 }
 
+/// Gate evaluation using u128 state for wide circuits (up to 128 wires).
+/// Same logic as Gate::evaluate_index but works beyond 64 bits.
+#[inline(always)]
+fn evaluate_gate_u128(state: u128, gate: [u8; 3]) -> u128 {
+    let c1 = (state >> gate[1]) & 1;
+    let c2 = (state >> gate[2]) & 1;
+    state ^ ((c1 | ((!c2) & 1)) << gate[0])
+}
+
+#[inline(always)]
+fn evaluate_circuit_u128(mut state: u128, gates: &[[u8; 3]]) -> u128 {
+    for g in gates {
+        state = evaluate_gate_u128(state, *g);
+    }
+    state
+}
+
 fn run_rng_stream<W: Write>(
     writer: W,
     wires: usize,
@@ -109,17 +135,17 @@ fn run_rng_stream<W: Write>(
     mode: &str,
     burn_in: usize,
 ) -> io::Result<()> {
-    if wires == 0 || wires > 64 {
+    if wires == 0 || wires > 128 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "wires must be in 1..=64",
+            "wires must be in 1..=128",
         ));
     }
 
-    let mask = if wires == 64 {
-        u64::MAX
+    let mask: u128 = if wires == 128 {
+        u128::MAX
     } else {
-        (1u64 << wires) - 1
+        (1u128 << wires) - 1
     };
 
     if let Some(seed) = seed {
@@ -135,33 +161,33 @@ fn run_rng_stream<W: Write>(
     match mode {
         "random-input" => {
             for _ in 0..burn_in {
-                let input = rng.random::<u64>() & mask;
-                let _ = Gate::evaluate_index_list(input as usize, &circuit.gates);
+                let input = (rng.random::<u128>()) & mask;
+                let _ = evaluate_circuit_u128(input, &circuit.gates);
             }
             for _ in 0..samples {
-                let input = rng.random::<u64>() & mask;
-                let output = Gate::evaluate_index_list(input as usize, &circuit.gates) as u64;
-                packer.push_bits(output & mask, wires as u8)?;
+                let input = (rng.random::<u128>()) & mask;
+                let output = evaluate_circuit_u128(input, &circuit.gates);
+                packer.push_bits_u128(output & mask, wires as u8)?;
             }
         }
         "counter" => {
             // Counter mode: C(0), C(1), C(2), ..., C(k)
             // Input is a simple counter modulo 2^n
             for i in 0..samples {
-                let input = (i as u64) & mask;
-                let output = Gate::evaluate_index_list(input as usize, &circuit.gates) as u64;
-                packer.push_bits(output & mask, wires as u8)?;
+                let input = (i as u128) & mask;
+                let output = evaluate_circuit_u128(input, &circuit.gates);
+                packer.push_bits_u128(output & mask, wires as u8)?;
             }
         }
         _ => {
             // iterate mode (default)
-            let mut state = rng.random::<u64>() & mask;
+            let mut state = (rng.random::<u128>()) & mask;
             for _ in 0..burn_in {
-                state = Gate::evaluate_index_list(state as usize, &circuit.gates) as u64 & mask;
+                state = evaluate_circuit_u128(state, &circuit.gates) & mask;
             }
             for _ in 0..samples {
-                state = Gate::evaluate_index_list(state as usize, &circuit.gates) as u64 & mask;
-                packer.push_bits(state, wires as u8)?;
+                state = evaluate_circuit_u128(state, &circuit.gates) & mask;
+                packer.push_bits_u128(state, wires as u8)?;
             }
         }
     }
@@ -537,7 +563,7 @@ fn main() {
                         .long("wires")
                         .value_parser(clap::value_parser!(usize))
                         .default_value("32")
-                        .help("Number of wires (1..=64)"),
+                        .help("Number of wires (1..=128)"),
                 )
                 .arg(
                     Arg::new("gates")
