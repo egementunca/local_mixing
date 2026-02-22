@@ -2,13 +2,15 @@
 """
 Fit scaling law m*(n) from RNG sweep data.
 
-Tries several functional forms:
-  - Linear: m*(n) = a * n
-  - Affine: m*(n) = a * n + b
-  - n*log(n): m*(n) = a * n * log(n) + b
-  - Power law: m*(n) = a * n^alpha
+Theory-motivated models:
+  - n*log(n): Chamon et al. predicts O(n log n) for tree circuits with
+    inflationary + nonlinear gates (NC1 depth O(log n)).
+  - n*(log n)^k: For gate-57-only circuits (no inflation), depth is at
+    least (log n)^k with k > 1. Gate count = n * depth.
 
-Outputs fit parameters, R^2 values, and a comparison plot.
+Empirical models:
+  - Linear: m*(n) = a * n
+  - Power law: m*(n) = a * n^alpha
 
 Usage:
     python scripts/scaling_fit.py --out rng_sweep/plots_comparison
@@ -48,44 +50,38 @@ def fit_and_report(name, n, m_star):
     m = np.array(m_star, dtype=float)
 
     results = []
-
-    # 1. Linear through origin: m = a*n
-    def linear(n, a):
-        return a * n
-    popt, _ = curve_fit(linear, n, m)
-    m_pred = linear(n, *popt)
-    ss_res = np.sum((m - m_pred) ** 2)
     ss_tot = np.sum((m - np.mean(m)) ** 2)
-    r2 = 1 - ss_res / ss_tot
-    a_val = popt[0]
-    results.append(("m = a*n", f"a={a_val:.2f}", r2, lambda x, a=a_val: a * x))
 
-    # 2. Affine: m = a*n + b
-    popt, _ = curve_fit(lambda n, a, b: a * n + b, n, m)
-    m_pred = popt[0] * n + popt[1]
-    ss_res = np.sum((m - m_pred) ** 2)
-    r2 = 1 - ss_res / ss_tot
-    a_val, b_val = popt
-    results.append(("m = a*n + b", f"a={a_val:.2f}, b={b_val:.0f}", r2,
-                     lambda x, a=a_val, b=b_val: a * x + b))
+    def add_fit(_, func, p0=None):
+        popt, _ = curve_fit(func, n, m, p0=p0) if p0 else curve_fit(func, n, m)
+        m_pred = func(n, *popt)
+        ss_res = np.sum((m - m_pred) ** 2)
+        r2 = 1 - ss_res / ss_tot
+        return popt, r2
 
-    # 3. n*log(n): m = a*n*log(n) + b
-    popt, _ = curve_fit(lambda n, a, b: a * n * np.log(n) + b, n, m)
-    m_pred = popt[0] * n * np.log(n) + popt[1]
-    ss_res = np.sum((m - m_pred) ** 2)
-    r2 = 1 - ss_res / ss_tot
-    a_val, b_val = popt
-    results.append(("m = a*n*ln(n) + b", f"a={a_val:.2f}, b={b_val:.0f}", r2,
-                     lambda x, a=a_val, b=b_val: a * x * np.log(x) + b))
+    # 1. n*log(n): theory for tree circuits (Chamon et al.)
+    popt, r2 = add_fit("nlogn", lambda n, a, b: a * n * np.log2(n) + b)
+    a, b = popt
+    results.append(("a·n·log₂(n) + b", f"a={a:.2f}, b={b:.0f}", r2,
+                     lambda x, a=a, b=b: a * x * np.log2(x) + b))
+
+    # 2. n*(log n)^k: theory for gate-57-only (depth >= (log n)^k)
+    popt, r2 = add_fit("nlogk", lambda n, a, k: a * n * np.log2(n) ** k, p0=[1, 1.5])
+    a, k = popt
+    results.append(("a·n·log₂(n)^k", f"a={a:.2f}, k={k:.3f}", r2,
+                     lambda x, a=a, k=k: a * x * np.log2(x) ** k))
+
+    # 3. Simple linear: m = a*n (empirical baseline)
+    popt, r2 = add_fit("linear", lambda n, a: a * n)
+    a = popt[0]
+    results.append(("a·n", f"a={a:.2f}", r2,
+                     lambda x, a=a: a * x))
 
     # 4. Power law: m = a * n^alpha
-    popt, _ = curve_fit(lambda n, a, alpha: a * n ** alpha, n, m, p0=[1, 1.1])
-    m_pred = popt[0] * n ** popt[1]
-    ss_res = np.sum((m - m_pred) ** 2)
-    r2 = 1 - ss_res / ss_tot
-    a_val, alpha_val = popt
-    results.append((f"m = a*n^α", f"a={a_val:.2f}, α={alpha_val:.3f}", r2,
-                     lambda x, a=a_val, al=alpha_val: a * x ** al))
+    popt, r2 = add_fit("power", lambda n, a, alpha: a * n ** alpha, p0=[1, 1.1])
+    a, alpha = popt
+    results.append(("a·n^α", f"a={a:.2f}, α={alpha:.3f}", r2,
+                     lambda x, a=a, al=alpha: a * x ** al))
 
     print(f"\n{'='*60}")
     print(f"Scaling fits for {name}")
