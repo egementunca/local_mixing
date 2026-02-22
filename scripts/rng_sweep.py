@@ -526,7 +526,7 @@ def _add_sweep_args(parser):
     parser.add_argument("--threshold", type=float, default=0.95,
                         help="Pass rate threshold for m*(n)")
     parser.add_argument(
-        "--stream-mode", choices=["iterate", "random-input", "counter"],
+        "--stream-mode", choices=["iterate", "random-input", "counter", "related-key"],
         default=None, help="Override bitstream mode")
 
 
@@ -1048,7 +1048,7 @@ subcommands:
     p_worker.add_argument("--replicate-index", type=int, required=True)
     p_worker.add_argument("--mode", choices=["quick", "medium", "full"], default="quick")
     p_worker.add_argument("--stream-mode",
-                          choices=["iterate", "random-input", "counter"],
+                          choices=["iterate", "random-input", "counter", "related-key"],
                           default="counter")
     p_worker.add_argument("--burn-in", type=int, default=0,
                           help="Burn-in samples (only used by iterate mode, ignored in counter)")

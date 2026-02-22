@@ -179,6 +179,20 @@ fn run_rng_stream<W: Write>(
                 packer.push_bits_u128(output & mask, wires as u8)?;
             }
         }
+        "related-key" => {
+            // Related-key mode: fix input x, output C[0..1](x), C[0..2](x), ..., C[0..M](x)
+            // Tests how pseudorandomness emerges gate by gate.
+            // `samples` inputs are each evaluated through all M prefix lengths,
+            // producing samples * gates output blocks.
+            for i in 0..samples {
+                let input = (i as u128) & mask;
+                let mut state = input;
+                for g in &circuit.gates {
+                    state = evaluate_gate_u128(state, *g);
+                    packer.push_bits_u128(state & mask, wires as u8)?;
+                }
+            }
+        }
         _ => {
             // iterate mode (default)
             let mut state = (rng.random::<u128>()) & mask;
@@ -588,9 +602,9 @@ fn main() {
                 .arg(
                     Arg::new("mode")
                         .long("mode")
-                        .value_parser(["iterate", "random-input", "counter"])
+                        .value_parser(["iterate", "random-input", "counter", "related-key"])
                         .default_value("iterate")
-                        .help("Stream mode: iterate (x_{t+1}=C(x_t)), random-input, or counter (C(0),C(1),...)"),
+                        .help("Stream mode: iterate, random-input, counter, or related-key (gate-by-gate prefix evaluation)"),
                 )
                 .arg(
                     Arg::new("burn-in")
@@ -1403,7 +1417,7 @@ fn main() {
             let lmdb = "./db";
             let env = lmdb::Environment::new()
                 // RAC opens many named DBs (ids_*, perm tables, etc). Keep headroom.
-                .set_max_dbs(120)
+                .set_max_dbs(400)
                 .set_map_size(700 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1605,7 +1619,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = lmdb::Environment::new()
-                .set_max_dbs(50)
+                .set_max_dbs(400)
                 .set_map_size(1 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1715,7 +1729,7 @@ fn main() {
 
             let env = lmdb::Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(100)
+                .set_max_dbs(400)
                 .set_map_size(1 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");

@@ -239,6 +239,43 @@ Repeat for all 5 widths. **Total: ~40 gate counts × 20 replicates = 800 jobs**
 
 ---
 
+## Phase 6: Related-Key Test (Gate-by-Gate Prefix Evaluation) — TODO
+
+Suggested by Ran Canetti. Fix an input x, evaluate the circuit at every prefix length
+m = 1, 2, ..., M, and output the sequence C[0..1](x), C[0..2](x), ..., C[0..M](x).
+This directly tracks how pseudorandomness emerges as gates are added — the empirical
+version of what Andrei calls "layer by layer evolution" and "string entropy saturation."
+
+The `--mode related-key` flag produces `samples × gates` output blocks: for each of
+`samples` inputs (0, 1, 2, ...), all M prefix evaluations are emitted sequentially.
+
+### What to Run
+
+Same strategic gate counts as Phase 3 (one at transition, one above), R=20.
+
+```bash
+python3 scripts/rng_sweep.py submit \
+    --mode quick --stream-mode related-key \
+    --wires 32 --gates 400 550 800 \
+    --replicates 20 \
+    --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+    --script-path "$SCRIPT" \
+    --results-dir /scratch/$USER/rng_relkey_w32 \
+    --time 02:00:00 --memory 4G --job-name rng_rk_w32
+```
+
+**Total: 5 widths × 3 gates × 20 replicates = 300 jobs**
+
+### Interpretation
+
+If the circuit becomes a good PRP at depth m\*, the related-key stream should start
+failing dieharder tests (since early prefix outputs are structured) but pass when
+restricted to deep prefixes. Comparing the threshold with CTR mode tells us whether
+the "key schedule" (adding gates one at a time) leaks structure that single-shot
+evaluation doesn't.
+
+---
+
 ## Environment Setup
 
 ### Rust Binary
@@ -341,7 +378,8 @@ python3 scripts/plot_rng_sweep.py --results rng_sweep_all.json
 | 3 | Full dieharder battery (27 tests, counter) | 300 | 2 hr | TODO |
 | 4 | NIST STS (188 tests, counter) | 200 | 1 hr | TODO |
 | 5 | Iterate mode comparison (7 tests, iterate) | 800 | 1 hr | TODO |
-| **Total** | | **6,700** | | |
+| 6 | Related-key test (7 tests, related-key) | 300 | 2 hr | TODO |
+| **Total** | | **7,000** | | |
 
 ---
 
