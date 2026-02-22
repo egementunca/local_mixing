@@ -35,23 +35,23 @@ Each (n, m, seed) triple is independent — embarrassingly parallel, ideal for S
 | **128** | 1000 | 0% | | 1500 | 6% | | 2000 | 73% | | 3000 | 100% |
 | | 4000 | 100% | | 5000 | 100% | | 6000 | 100% | | 8000 | 100% |
 
-### m\*(n) Estimates (95% threshold)
+### m\*(n) Estimates (95% threshold, refined with Phase 2)
 
 | Width (n) | m\*(n) | Gates/wire | Transition region |
 |-----------|--------|------------|-------------------|
-| 32 | ~600 | 18.8 | 350–600 |
-| 48 | ~1000 | 20.8 | 600–1000 |
+| 32 | ~525 | 16.4 | 350–600 |
+| 48 | ~850 | 17.7 | 600–950 |
 | 64 | ~1200 | 18.8 | 800–1200 |
-| 96 | ~2000 | 20.8 | 1500–2000 |
-| 128 | ~3000 | 23.4 | 2000–3000 |
+| 96 | ~2000 | 20.8 | 1500–2250 |
+| 128 | ~2500 | 19.5 | 2000–2750 |
 
-**Observations**: Scaling is roughly m\*(n) ≈ 20n. Pass rates plateau at 95–99% even at high gate
+**Observations**: Scaling is roughly m\*(n) ≈ 17–21n. Pass rates plateau at 95–99% even at high gate
 counts (stochastic noise at R=100 with max_weak=1). The bottleneck test is consistently
 `sts_monobit` — it's the last to pass in the transition region.
 
 ---
 
-## Phase 2: Transition Refinement (denser gate counts) — TODO
+## Phase 2: Transition Refinement (denser gate counts) — COMPLETE
 
 Add gate counts within the identified transition regions to pin down m\*(n) precisely.
 
@@ -210,7 +210,7 @@ Replicate the USE report style:
 
 ---
 
-## Phase 5: Iterate Mode (OFB) Comparison — TODO
+## Phase 5: Iterate Mode (OFB) Comparison — COMPLETE
 
 The professor's group tested their cipher in **OFB mode** (output feedback), which is our
 **iterate mode**: `x → C(x) → C(C(x)) → ...`. Running iterate mode at the same configurations
@@ -239,7 +239,7 @@ Repeat for all 5 widths. **Total: ~40 gate counts × 20 replicates = 800 jobs**
 
 ---
 
-## Phase 6: Related-Key Test (Gate-by-Gate Prefix Evaluation) — TODO
+## Phase 6: Related-Key Test (Gate-by-Gate Prefix Evaluation) — COMPLETE (0% pass)
 
 Suggested by Ran Canetti. Fix an input x, evaluate the circuit at every prefix length
 m = 1, 2, ..., M, and output the sequence C[0..1](x), C[0..2](x), ..., C[0..M](x).
