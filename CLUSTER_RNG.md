@@ -375,7 +375,7 @@ python3 scripts/plot_rng_sweep.py --results rng_sweep_all.json
 |-------|------|------|----------------|--------|
 | 1 | Coarse scan (7 tests, counter) | 4,000 | 1–2 hr | **COMPLETE** |
 | 2 | Transition refinement (7 tests, counter) | 1,400 | 1 hr | **COMPLETE** |
-| 3 | Full dieharder battery (27 tests, counter) | 300 | 2 hr | **PARTIAL** (243/300) |
+| 3 | Full dieharder battery (27 tests, counter) | 300 | 2 hr | **COMPLETE** |
 | 4 | NIST STS (188 tests, counter) | 200 | 1 hr | TODO |
 | 5 | Iterate mode comparison (7 tests, iterate) | 800 | 1 hr | **COMPLETE** |
 | 6 | Related-key test (7 tests, related-key) | 300 | 2 hr | **COMPLETE** (0% pass) |
