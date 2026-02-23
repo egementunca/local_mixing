@@ -79,7 +79,7 @@ python3 scripts/rng_sweep.py submit \
 
 ---
 
-## Phase 3: Full Dieharder Battery (all good tests, counter mode) — TODO
+## Phase 3: Full Dieharder Battery (all good tests, counter mode) — COMPLETE
 
 Phase 1 used only 7 core tests (IDs: 0,2,3,8,15,100,101). The USE report (Chamon et al.)
 ran the **complete dieharder battery** (~114 individual tests across 27 test families).
@@ -124,6 +124,60 @@ python3 scripts/rng_sweep.py submit \
     --script-path "$SCRIPT" \
     --results-dir /scratch/$USER/rng_full_w32 \
     --time 02:00:00 --memory 4G --job-name rng_full_w32
+```
+
+### Phase 3 Bug: `rgb_minimum_distance` ntup=0
+
+Phase 3 ran `-d 201` without `-n`, defaulting to ntup=0 (0-dimensional space).
+This is a degenerate dieharder mode that fails for ALL generators — AES-OFB included.
+The fix: `rng_sweep.py` now expands tests 200–203 into their correct ntuple ranges
+automatically (see `NTUPLE_RANGES` in the script).
+
+**Missing from Phase 3:** tests 200 (rgb_bitdist, needs ntuple) and 17 (GCD, likely timeout).
+
+---
+
+## Phase 3b: Ntuple Fix Re-run (tests 200, 201 only) — TODO
+
+Targeted re-run of the two tests that were missing/broken in Phase 3, using the
+fixed `rng_sweep.py` with proper ntuple handling. Same widths, gates, replicates.
+
+**Tests to run:**
+- Test 200 (rgb_bitdist): expands to ntup=1–12 (12 sub-tests)
+- Test 201 (rgb_minimum_distance): expands to ntup=2–5 (4 sub-tests)
+
+**Do not delete Phase 3 results.** Store in a separate results dir (`rng_p3b_*`).
+
+**Total: 300 jobs** (same as Phase 3).
+**Estimated wall time:** ~30 min per job (16 ntup sub-tests). Request `--time 01:00:00`.
+
+```bash
+# --- Phase 3b: ntuple fix re-run ---
+BINARY="/usr3/graduate/$USER/local_mixing/target/release/local_mixing_bin"
+DIEHARDER="/usr3/graduate/$USER/dieharder-3.31.1/dieharder/dieharder"
+SCRIPT="/usr3/graduate/$USER/local_mixing/scripts/rng_sweep.py"
+
+# One submit per width (separate dirs, don't touch Phase 3 results)
+for W in 32 48 64 96 128; do
+    GATES=$(python3 -c "
+g = {32: '400 550 800', 48: '600 850 1200', 64: '800 1100 1500', 96: '1500 2000 3000', 128: '2000 2750 4000'}
+print(g[$W])
+")
+    python3 "$SCRIPT" submit \
+        --mode full --stream-mode counter \
+        --wires $W --gates $GATES \
+        --replicates 20 \
+        --test-ids "200,201" \
+        --binary-path "$BINARY" --dieharder-path "$DIEHARDER" \
+        --script-path "$SCRIPT" \
+        --results-dir /scratch/$USER/rng_p3b_w${W} \
+        --time 01:00:00 --memory 4G --job-name rng_p3b_w${W}
+done
+
+# After completion: collect each width
+for W in 32 48 64 96 128; do
+    python3 "$SCRIPT" collect --results-dir /scratch/$USER/rng_p3b_w${W}
+done
 ```
 
 ---

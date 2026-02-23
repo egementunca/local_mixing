@@ -49,9 +49,17 @@ ALL_TESTS = [
     200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
 ]
 
+# Tests that require explicit -n (ntuple) parameter. When invoked via -d without
+# -n, dieharder defaults to ntuple=0 which is degenerate/broken for these tests.
+# The -a mode handles this correctly; individual invocation does not.
+NTUPLE_RANGES = {
+    200: list(range(1, 13)),   # rgb_bitdist: ntup 1-12
+    201: list(range(2, 6)),    # rgb_minimum_distance: ntup 2-5
+    202: list(range(2, 6)),    # rgb_permutations: ntup 2-5
+    203: list(range(0, 33)),   # rgb_lagged_sums: ntup 0-32
+}
+
 # Core tests: good reliability, reasonable data requirements, diverse coverage
-# NOTE: Tests requiring -n ntuple (200-204) need special handling and are
-# excluded from core. Use -a mode or handle ntuple explicitly.
 CORE_TESTS = [
     0,   # birthdays -- spacing/clustering
     2,   # rank 32x32 -- linear dependence
@@ -220,14 +228,18 @@ def generate_stream(wires, gates, samples, seed, mode, burn_in, out_path, cwd):
         raise RuntimeError(f"rng-stream failed: {result.stderr}")
 
 
-def run_dieharder_test(test_id, file_path, dieharder_path):
+def run_dieharder_test(test_id, file_path, dieharder_path, ntuple=None):
     """
     Run a SINGLE dieharder test against a file.
     Each test gets its own invocation so it can read the full file.
     WARNING: File mode can cause data reuse (rewinding) if the file is
     too small for a test. Use run_dieharder_pipe for unlimited data.
+
+    ntuple: if set, pass -n to dieharder. Required for tests 200-203.
     """
     cmd = [dieharder_path, "-g", "201", "-f", file_path, "-d", str(test_id)]
+    if ntuple is not None:
+        cmd += ["-n", str(ntuple)]
 
     result = subprocess.run(
         cmd,
@@ -240,7 +252,8 @@ def run_dieharder_test(test_id, file_path, dieharder_path):
 
 
 def run_dieharder_pipe(test_id, wires, gates, seed, mode, burn_in,
-                       dieharder_path, cwd, gen_cmd_prefix=None):
+                       dieharder_path, cwd, gen_cmd_prefix=None,
+                       ntuple=None):
     """
     Run a SINGLE dieharder test by piping generator output directly.
     No file, no rewind, no size limit -- dieharder draws as many numbers
@@ -251,6 +264,7 @@ def run_dieharder_pipe(test_id, wires, gates, seed, mode, burn_in,
     different data requirements (5M to 640M+ random numbers).
 
     gen_cmd_prefix: override for CARGO_RUN (e.g. path to pre-compiled binary).
+    ntuple: if set, pass -n to dieharder. Required for tests 200-203.
     """
     prefix = gen_cmd_prefix or CARGO_RUN
     gen_cmd = prefix + [
@@ -264,6 +278,8 @@ def run_dieharder_pipe(test_id, wires, gates, seed, mode, burn_in,
     ]
 
     dh_cmd = [dieharder_path, "-g", "200", "-d", str(test_id)]
+    if ntuple is not None:
+        dh_cmd += ["-n", str(ntuple)]
 
     # Pipe: generator -> dieharder
     gen_proc = subprocess.Popen(
@@ -333,18 +349,23 @@ def run_single_replicate(
         # Pipe mode: each test gets its own fresh pipe from the generator
         all_tests = []
         for test_id in dieharder_tests:
-            try:
-                results = run_dieharder_pipe(
-                    test_id, wires, gates, seed, mode, burn_in,
-                    dieharder_path, cwd, gen_cmd_prefix=gen_cmd_prefix,
-                )
-                all_tests.extend(results)
-                for r in results:
-                    log(f"      test {test_id:>3d} ({r.test_name}): p={r.p_value:.6f} {r.assessment}")
-            except subprocess.TimeoutExpired:
-                log(f"      test {test_id:>3d}: TIMEOUT (skipped)")
-            except Exception as e:
-                log(f"      test {test_id:>3d}: ERROR ({e})")
+            # Tests 200-203 need explicit ntuple values; expand into multiple runs
+            ntuple_values = NTUPLE_RANGES.get(test_id, [None])
+            for nt in ntuple_values:
+                try:
+                    results = run_dieharder_pipe(
+                        test_id, wires, gates, seed, mode, burn_in,
+                        dieharder_path, cwd, gen_cmd_prefix=gen_cmd_prefix,
+                        ntuple=nt,
+                    )
+                    all_tests.extend(results)
+                    for r in results:
+                        nt_str = f" n={nt}" if nt is not None else ""
+                        log(f"      test {test_id:>3d}{nt_str} ({r.test_name}): p={r.p_value:.6f} {r.assessment}")
+                except subprocess.TimeoutExpired:
+                    log(f"      test {test_id:>3d}: TIMEOUT (skipped)")
+                except Exception as e:
+                    log(f"      test {test_id:>3d}: ERROR ({e})")
 
         duration = time.time() - start
         num_passed = sum(1 for t in all_tests if t.assessment == "PASSED")
@@ -370,15 +391,19 @@ def run_single_replicate(
 
         all_tests = []
         for test_id in dieharder_tests:
-            try:
-                results = run_dieharder_test(test_id, tmp_path, dieharder_path)
-                all_tests.extend(results)
-                for r in results:
-                    log(f"      test {test_id:>3d} ({r.test_name}): p={r.p_value:.6f} {r.assessment}")
-            except subprocess.TimeoutExpired:
-                log(f"      test {test_id:>3d}: TIMEOUT (skipped)")
-            except Exception as e:
-                log(f"      test {test_id:>3d}: ERROR ({e})")
+            # Tests 200-203 need explicit ntuple values; expand into multiple runs
+            ntuple_values = NTUPLE_RANGES.get(test_id, [None])
+            for nt in ntuple_values:
+                try:
+                    results = run_dieharder_test(test_id, tmp_path, dieharder_path, ntuple=nt)
+                    all_tests.extend(results)
+                    for r in results:
+                        nt_str = f" n={nt}" if nt is not None else ""
+                        log(f"      test {test_id:>3d}{nt_str} ({r.test_name}): p={r.p_value:.6f} {r.assessment}")
+                except subprocess.TimeoutExpired:
+                    log(f"      test {test_id:>3d}: TIMEOUT (skipped)")
+                except Exception as e:
+                    log(f"      test {test_id:>3d}: ERROR ({e})")
 
         duration = time.time() - start
         num_passed = sum(1 for t in all_tests if t.assessment == "PASSED")
@@ -541,6 +566,8 @@ def _build_config(args):
         config["replicates"] = args.replicates
     if args.stream_mode:
         config["mode"] = args.stream_mode
+    if hasattr(args, "test_ids") and args.test_ids:
+        config["dieharder_tests"] = [int(x) for x in args.test_ids.split(",")]
     return config
 
 
@@ -1064,6 +1091,8 @@ subcommands:
     # --- submit ---
     p_submit = subparsers.add_parser("submit", help="Generate SGE array job")
     _add_sweep_args(p_submit)
+    p_submit.add_argument("--test-ids", type=str, default=None,
+                          help="Comma-separated dieharder test IDs (overrides mode defaults)")
     p_submit.add_argument("--binary-path", type=str, required=True,
                           help="Path to pre-compiled local_mixing_bin on cluster")
     p_submit.add_argument("--dieharder-path", type=str, required=True,
