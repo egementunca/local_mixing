@@ -6,7 +6,7 @@ use crate::{
     algorithms::shuffle_bitflip::{ShuffleBitflipGenerator, ShuffleBitflipState},
     config::{FlipScope, ObfuscationConfig},
     infra::circuit::circuit::CircuitSeq,
-    infra::random::random_data::shoot_random_gate,
+    infra::random::random_data::{random_circuit, shoot_random_gate, shoot_right_vec},
 };
 // use crate::infra::random::random_data::random_walk_no_skeleton;
 
@@ -1193,7 +1193,7 @@ pub fn split_into_random_chunks<T: Clone>(
 
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
-    let db_names = [
+    let mut db_names: Vec<String> = vec![
         "n3m1",
         "n3m2",
         "n3m3",
@@ -1264,12 +1264,32 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
         "ids_n16",
         "ids_rev",
         "ids_wit_prefilter",
-    ];
+        "swaps",
+        "not",
+        "swapsnot1",
+        "swapsnot2",
+        "swapsnot12",
+        "cnot",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
 
-    for name in db_names.iter() {
-        match env.open_db(Some(name)) {
+    // many_thread-compatible taxonomy-split identity tables
+    for n in [5usize, 6, 7, 16] {
+        for g in 0..=33 {
+            db_names.push(format!("ids_n{}g{}", n, g));
+        }
+    }
+    for g in 0..=33 {
+        db_names.push(format!("ids_n128g{}single", g));
+        db_names.push(format!("ids_n128g{}tower", g));
+    }
+
+    for name in db_names {
+        match env.open_db(Some(name.as_str())) {
             Ok(db) => {
-                dbs.insert(name.to_string(), db);
+                dbs.insert(name, db);
             }
             Err(lmdb::Error::NotFound) => continue,
             Err(e) => panic!("Failed to open LMDB database {}: {:?}", name, e),
@@ -2196,4 +2216,371 @@ pub fn main_rac_big(
         .expect("Failed to write final circuit");
 
     println!("Final circuit written to {}", save);
+}
+
+// ============================================================================
+// Back To Basics (BTB) — Issue #47 algorithm
+// ============================================================================
+//
+// Input: Circuit C = γ₁...γₘ over n wires.
+// m* = number of gates for pseudorandomness (from diehard tests).
+//
+// 1. Shoot γ₁...γₘ (reorder commuting gates)
+// 2. For each γᵢ, insert Rᵢ|Rᵢ⁻¹ where Rᵢ has m* random gates
+// 3. Shoot Rᵢ gates left, Rᵢ⁻¹ gates right
+// 4. Mix in Rᵢ's: for each gate ρⱼ in Rᵢ, find first colliding gate to the
+//    LEFT, rewrite the pair via LMDB identity replacement
+// 5. Mix in Rᵢ⁻¹'s: same but find collisions to the RIGHT
+// 6. Standard compression
+
+/// Returns m*(n): the number of ECA57 gates needed for pseudorandomness on n wires.
+/// Based on diehard test results (counter mode, 95% threshold).
+fn m_star(n: usize) -> usize {
+    match n {
+        n if n <= 8 => 100,       // small circuits, conservative
+        n if n <= 16 => 200,
+        n if n <= 32 => 525,      // from diehard sweep
+        n if n <= 48 => 850,
+        n if n <= 64 => 1200,     // interpolated (counter mode)
+        n if n <= 96 => 2250,
+        n if n <= 128 => 2500,
+        _ => (n as f64 * 20.0) as usize, // linear fallback
+    }
+}
+
+/// Step 2: Insert R|R⁻¹ blocks between each pair of consecutive plaintext gates.
+///
+/// Given C = γ₁...γₘ, produces:
+///   γ₁ | R₁ | R₁⁻¹ | γ₂ | R₂ | R₂⁻¹ | ... | γₘ | Rₘ | Rₘ⁻¹
+///
+/// Returns (inflated_circuit, r_block_positions) where r_block_positions[i] = (start_of_Ri, start_of_Ri_inv)
+fn insert_r_blocks(
+    circuit: &CircuitSeq,
+    n: usize,
+    m_star_val: usize,
+) -> (CircuitSeq, Vec<(usize, usize)>) {
+    let m = circuit.gates.len();
+    // Total length: m plaintext gates + m * 2 * m_star R/R⁻¹ gates
+    let total_len = m + m * 2 * m_star_val;
+    let mut gates = Vec::with_capacity(total_len);
+    let mut positions = Vec::with_capacity(m);
+
+    for i in 0..m {
+        // Insert plaintext gate γᵢ
+        gates.push(circuit.gates[i]);
+
+        // Generate random Rᵢ with m* gates
+        let r_i = random_circuit(n as u8, m_star_val);
+
+        // Record positions: Rᵢ starts at current length
+        let r_start = gates.len();
+        // Append Rᵢ
+        gates.extend_from_slice(&r_i.gates);
+        // Record Rᵢ⁻¹ start position
+        let r_inv_start = gates.len();
+        // Append Rᵢ⁻¹ (reverse of Rᵢ since ECA57 is self-inverse)
+        for j in (0..m_star_val).rev() {
+            gates.push(r_i.gates[j]);
+        }
+
+        positions.push((r_start, r_inv_start));
+    }
+
+    (CircuitSeq { gates }, positions)
+}
+
+/// Step 3: Directional shooting.
+/// Shoot all gates in Rᵢ regions to the LEFT.
+/// Shoot all gates in Rᵢ⁻¹ regions to the RIGHT.
+fn directional_shoot(
+    circuit: &mut CircuitSeq,
+    positions: &[(usize, usize)],
+    m_star_val: usize,
+    shoot_rounds: usize,
+) {
+    let mut rng = rand::rng();
+
+    // Shoot Rᵢ gates LEFT (multiple rounds for better mixing)
+    for _ in 0..shoot_rounds {
+        // Process R blocks in reverse order to handle index shifts correctly
+        // We track the current gate positions approximately — shooting is best-effort
+        for &(r_start, _r_inv_start) in positions.iter().rev() {
+            // Each Rᵢ has m_star_val gates starting at r_start
+            // After previous operations, indices may have shifted, but
+            // shoot_left_vec handles out-of-bounds gracefully
+            for j in 0..m_star_val {
+                let idx = r_start + j;
+                if idx < circuit.gates.len() {
+                    crate::infra::random::random_data::shoot_left_vec(&mut circuit.gates, idx);
+                }
+            }
+        }
+    }
+
+    // Shoot Rᵢ⁻¹ gates RIGHT
+    for _ in 0..shoot_rounds {
+        for &(_r_start, r_inv_start) in positions.iter() {
+            for j in 0..m_star_val {
+                let idx = r_inv_start + j;
+                if idx < circuit.gates.len() {
+                    shoot_right_vec(&mut circuit.gates, idx);
+                }
+            }
+        }
+    }
+}
+
+/// Steps 4+5: Sequential gate-by-gate mixing.
+///
+/// For each gate in the circuit, find first colliding gate in the specified
+/// direction and replace the pair using LMDB identity circuits.
+///
+/// direction: true = search LEFT (for Rᵢ), false = search RIGHT (for Rᵢ⁻¹)
+fn mix_sequential_directed(
+    circuit: &mut CircuitSeq,
+    num_wires: usize,
+    conn: &mut Connection,
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
+) -> (usize, usize, usize, usize) {
+    // We reuse replace_sequential_pairs which already does sequential
+    // gate-by-gate processing from left to right. For the reverse direction,
+    // we reverse the circuit, process, then reverse back.
+
+    // Forward pass (Rᵢ gates mixed leftward)
+    let (col1, shoot1, zero1, trav1) =
+        replace_sequential_pairs(circuit, num_wires, conn, env, bit_shuf_list, dbs);
+
+    // Reverse pass (Rᵢ⁻¹ gates mixed rightward)
+    circuit.gates.reverse();
+    let (col2, shoot2, zero2, trav2) =
+        replace_sequential_pairs(circuit, num_wires, conn, env, bit_shuf_list, dbs);
+    circuit.gates.reverse();
+
+    (col1 + col2, shoot1 + shoot2, zero1 + zero2, trav1 + trav2)
+}
+
+/// Main entry point for the "Back To Basics" algorithm (Issue #47).
+///
+/// 1. Shoot original circuit
+/// 2. Insert R|R⁻¹ per-gate blocks
+/// 3. Directional shooting (R left, R⁻¹ right)
+/// 4. Sequential gate-by-gate mixing (forward + reverse passes)
+/// 5. Compression until stable
+pub fn main_btb(
+    c: &CircuitSeq,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    intermediate: &str,
+    m_star_override: Option<usize>,
+) {
+    let save_base = save.strip_suffix(".txt").unwrap_or(save);
+    let progress_path = format!("{}_progress.txt", save_base);
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
+
+    let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    let dbs = open_all_dbs(env);
+
+    let m_star_val = m_star_override.unwrap_or_else(|| m_star(n));
+    let m = c.gates.len();
+
+    println!("=== Back To Basics (Issue #47) ===");
+    println!("Input: {} gates on {} wires", m, n);
+    println!("m*({}): {} gates per R-block", n, m_star_val);
+    println!("Expected inflation: {} + {} * 2 * {} = {} gates",
+        m, m, m_star_val, m + m * 2 * m_star_val);
+
+    // Step 1: Shoot original circuit
+    let t_total = Instant::now();
+    let t1 = Instant::now();
+    let mut circuit = c.clone();
+    let shoot_rounds = circuit.gates.len() * 5;
+    shoot_random_gate(&mut circuit, shoot_rounds);
+    println!("Step 1 (shoot): {:.2}s", t1.elapsed().as_secs_f64());
+
+    // Step 2: Insert R|R⁻¹ blocks
+    let t2 = Instant::now();
+    let (mut circuit, positions) = insert_r_blocks(&circuit, n, m_star_val);
+    println!("Step 2 (insert R blocks): {} gates, {:.2}s",
+        circuit.gates.len(), t2.elapsed().as_secs_f64());
+
+    // Verify functional equivalence after R|R⁻¹ insertion (R|R⁻¹ = I)
+    if n <= 20 {
+        c.probably_equal(&circuit, n, 10_000)
+            .expect("R-block insertion changed functionality!");
+        println!("  Functional equivalence verified");
+    }
+
+    // Step 3: Directional shooting
+    let t3 = Instant::now();
+    directional_shoot(&mut circuit, &positions, m_star_val, 1);
+    println!("Step 3 (directional shoot): {:.2}s", t3.elapsed().as_secs_f64());
+
+    if n <= 20 {
+        c.probably_equal(&circuit, n, 10_000)
+            .expect("Directional shooting changed functionality!");
+    }
+
+    // Write intermediate pre-mixing state
+    {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(intermediate)
+            .expect("Failed to open intermediate file");
+        writeln!(f, "=== Pre-mixing (after R-block insertion + shoot) ===")
+            .expect("Failed to write");
+        writeln!(f, "{}", circuit.repr()).expect("Failed to write");
+    }
+
+    // Steps 4+5: Sequential mixing with chunking (parallelized)
+    let t4 = Instant::now();
+    let k = if circuit.gates.len() <= 1500 {
+        1
+    } else {
+        std::cmp::min((circuit.gates.len() + 1499) / 1500, 60)
+    };
+    let mut rng = rand::rng();
+    let chunks = split_into_random_chunks(&circuit.gates, k, &mut rng);
+    println!("Step 4+5 (mixing): {} chunks...", chunks.len());
+
+    let replaced_chunks: Vec<Vec<[u8; 3]>> = chunks
+        .into_par_iter()
+        .map(|chunk| {
+            let mut sub = CircuitSeq { gates: chunk };
+            let mut thread_conn = Connection::open_with_flags(
+                "db/circuits.db",
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .or_else(|_| Connection::open_in_memory())
+            .expect("Failed to open SQLite connection");
+
+            // Forward pass (mixing Rᵢ leftward)
+            let _ = replace_sequential_pairs(
+                &mut sub, n, &mut thread_conn, &env, &bit_shuf_list, &dbs,
+            );
+
+            // Reverse pass (mixing Rᵢ⁻¹ rightward)
+            sub.gates.reverse();
+            let _ = replace_sequential_pairs(
+                &mut sub, n, &mut thread_conn, &env, &bit_shuf_list, &dbs,
+            );
+            sub.gates.reverse();
+
+            sub.gates
+        })
+        .collect();
+
+    circuit.gates = replaced_chunks.into_iter().flatten().collect();
+    println!("  After mixing: {} gates, {:.2}s",
+        circuit.gates.len(), t4.elapsed().as_secs_f64());
+
+    // Write post-mixing intermediate
+    {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(intermediate)
+            .expect("Failed to open intermediate file");
+        writeln!(f, "=== Post-mixing ===").expect("Failed to write");
+        writeln!(f, "{}", circuit.repr()).expect("Failed to write");
+    }
+
+    // Step 6: Compression until stable
+    let t6 = Instant::now();
+    println!("Step 6 (compression): starting from {} gates", circuit.gates.len());
+    let config = ObfuscationConfig::default();
+    let mut stable_count = 0;
+    while stable_count < 12 {
+        let before = circuit.gates.len();
+        let k = if before <= 1500 { 1 } else {
+            std::cmp::min((before + 1499) / 1500, 60)
+        };
+        let mut rng = rand::rng();
+        let chunks = split_into_random_chunks(&circuit.gates, k, &mut rng);
+        let compressed_chunks: Vec<Vec<[u8; 3]>> = chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "db/circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .or_else(|_| Connection::open_in_memory())
+                .expect("Failed to open SQLite connection");
+                compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, &dbs, &config).gates
+            })
+            .collect();
+        circuit.gates = compressed_chunks.into_iter().flatten().collect();
+        let after = circuit.gates.len();
+
+        if after == before {
+            stable_count += 1;
+        } else {
+            stable_count = 0;
+        }
+        println!("  Compression pass: {} -> {} gates", before, after);
+    }
+    println!("Step 6 done: {} gates, {:.2}s",
+        circuit.gates.len(), t6.elapsed().as_secs_f64());
+
+    // Final cleanup: remove adjacent duplicate gates (ECA57 self-inverse)
+    let mut j = 0;
+    while j < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[j] == circuit.gates[j + 1] {
+            circuit.gates.drain(j..=j + 1);
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
+
+    // Verify functional equivalence
+    if n <= 20 {
+        c.probably_equal(&circuit, n, 150_000)
+            .expect("BTB output is not functionally equivalent!");
+        println!("Final functional equivalence: VERIFIED");
+    }
+
+    let elapsed = t_total.elapsed().as_secs_f64();
+    println!("\n=== BTB Results ===");
+    println!("Input:  {} gates", m);
+    println!("Output: {} gates", circuit.gates.len());
+    println!("Expansion: {:.1}x", circuit.gates.len() as f64 / m as f64);
+    println!("Time: {:.1}s ({:.1} min)", elapsed, elapsed / 60.0);
+
+    // Write final circuit
+    let circuit_str = circuit.repr();
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write final circuit");
+    println!("Final circuit written to {}", save);
+
+    // Write progress
+    {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress_path)
+            .expect("Failed to open progress file");
+        writeln!(f, "=== Final ===\nGates: {}\nExpansion: {:.1}x\nTime: {:.1}s",
+            circuit.gates.len(),
+            circuit.gates.len() as f64 / m as f64,
+            elapsed,
+        ).expect("Failed to write progress");
+    }
 }

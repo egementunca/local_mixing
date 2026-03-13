@@ -5,6 +5,7 @@
 //! - **Reducer**: Attempts to compress circuits by local cancellation and template matching.
 
 use crate::infra::circuit::{CircuitSeq, Gate};
+use crate::infra::ids_index::{self, IDS_REV_DB};
 use crate::infra::random::random_data::random_circuit;
 use crate::algorithms::butterfly::replace::random_canonical_id;
 use rand::Rng;
@@ -312,51 +313,49 @@ fn pass_commute_expose<R: Rng>(circuit: &mut CircuitSeq, rng: &mut R) -> bool {
     exposed
 }
 
-/// Pass 3: Template Deletion (Naive Window Match).
-/// Scans for windows that match known templates (modulo relabeling).
+/// Pass 3: Template Deletion (Window-based Identity Detection).
+///
+/// Two-tier strategy:
+///   Tier 1 (brute-force): Small windows with ≤6 active wires — enumerate all 2^k states.
+///   Tier 2 (DB lookup):   Larger windows — canonicalize and query LMDB ids_rev index.
+///
+/// When an LMDB environment is provided and contains the `ids_rev` database
+/// (built by `build_ids_indexes`), this function can detect identities that
+/// span up to 24 gates and 10+ active wires — far beyond the brute-force limit.
 fn pass_template_delete(
     circuit: &mut CircuitSeq,
-    _env: Option<&lmdb::Environment>,
+    env: Option<&lmdb::Environment>,
     _conn: Option<&rusqlite::Connection>,
 ) -> bool {
-    // MVP: We only detect "Identity" templates.
-    // Actually, "delete matched templates" implies we replace them with empty circuit.
-    // For MVP, without a fast index, this is O(L * T) where L is circuit len, T is num templates.
-    // If we generate templates on fly, we don't have a "DB of all templates".
-    // BUT, we can detect *self-evident* identities?
-    // No, the attacker "knows" the template DB.
+    // Try to open the ids_rev database for DB-backed lookup
+    let ids_rev_db = env.and_then(|e| e.open_db(Some(IDS_REV_DB)).ok());
 
-    // If we are using synthetic templates (P . P^-1) in mixing, the reducer should ideally "know" them?
-    // Or we rely on the fact that P . P^-1 is just 1.
-    // A general reducer might check small windows for Identity by function evaluation.
-    // This is "bruteforce identity check on window".
+    // Tier 1: brute-force windows (small active wire count)
+    let bf_windows = [4, 6, 8, 10, 12, 16];
+    const BF_ACTIVE_LIMIT: usize = 6;
 
-    // Implementation:
-    // Slide window of size W in 4..12
-    // Measure active wires k.
-    // If k is small (e.g. <= 5), check if window is Identity map.
-    // If so, delete it.
+    // Tier 2: DB-only windows (larger, only checked when DB available)
+    let db_windows: &[usize] = if ids_rev_db.is_some() {
+        &[4, 6, 8, 10, 12, 16, 20, 24]
+    } else {
+        &[] // skip tier 2 when no DB
+    };
+    const DB_ACTIVE_LIMIT: usize = 16; // DB can handle wider circuits
 
-    let windows = [4, 6, 8, 10, 12, 16]; // Window sizes
     let mut changed = false;
 
-    // We iterate manually to handle deletions safely
-    // Actually, simple strategy: try found match, if found, delete and restart.
-
-    // Limit iterations to avoid infinite loops if something is weird
-    for _iter in 0..10 {
+    // Limit iterations to avoid infinite loops
+    for _iter in 0..20 {
         let mut found_this_iter = false;
 
-        'window_loop: for &w_len in &windows {
+        // --- Tier 1: Brute-force identity check (fast, small windows) ---
+        'bf_loop: for &w_len in &bf_windows {
             if circuit.gates.len() < w_len {
                 continue;
             }
-
             for i in 0..=circuit.gates.len() - w_len {
-                // Check window [i .. i+w_len]
                 let window_gates = &circuit.gates[i..i + w_len];
 
-                // Identify active wires
                 let mut active = HashSet::new();
                 for g in window_gates {
                     active.insert(g[0]);
@@ -364,18 +363,49 @@ fn pass_template_delete(
                     active.insert(g[2]);
                 }
 
-                if active.len() <= 6 {
-                    // Limit checking to small active sets for speed
-                    // Check identity
-                    // Bruteforce check? 2^k checks.
-                    // with k=6, 64 checks. Fast.
-
+                if active.len() <= BF_ACTIVE_LIMIT {
                     if is_identity_window(window_gates, &active) {
-                        // Delete!
                         circuit.gates.drain(i..i + w_len);
                         changed = true;
                         found_this_iter = true;
-                        break 'window_loop; // Invalidated indices, restart
+                        break 'bf_loop;
+                    }
+                }
+            }
+        }
+
+        if found_this_iter {
+            continue; // restart from top after a deletion
+        }
+
+        // --- Tier 2: DB-backed identity lookup (handles larger windows) ---
+        if let (Some(e), Some(db)) = (env, ids_rev_db) {
+            'db_loop: for &w_len in db_windows {
+                if circuit.gates.len() < w_len {
+                    continue;
+                }
+                for i in 0..=circuit.gates.len() - w_len {
+                    let window_gates = &circuit.gates[i..i + w_len];
+
+                    let mut active = HashSet::new();
+                    for g in window_gates {
+                        active.insert(g[0]);
+                        active.insert(g[1]);
+                        active.insert(g[2]);
+                    }
+
+                    // Skip windows already covered by brute-force tier
+                    if active.len() <= BF_ACTIVE_LIMIT {
+                        continue;
+                    }
+
+                    if active.len() <= DB_ACTIVE_LIMIT {
+                        if ids_index::ids_rev_contains(e, db, window_gates) {
+                            circuit.gates.drain(i..i + w_len);
+                            changed = true;
+                            found_this_iter = true;
+                            break 'db_loop;
+                        }
                     }
                 }
             }

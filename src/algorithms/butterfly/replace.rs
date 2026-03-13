@@ -159,9 +159,75 @@ fn make_stdin_nonblocking() {
     }
 }
 
-// Get a random identity circuit from LMDB database matching gate pair taxonomy
-// Ported from many_thread branch for RAC integration
-fn get_random_identity(
+const IDS_N5G_COUNTS: [usize; 34] = [
+    0, 100_235, 177_541, 169_347, 177_481, 88_913, 119_879, 169_161, 119_872, 90_262, 294_944,
+    158_422, 158_411, 340_518, 494_202, 133_325, 136_497, 530_248, 116_600, 283_097, 122_255,
+    156_822, 116_524, 291_005, 140_980, 447_910, 156_746, 121_233, 529_131, 282_660, 290_595,
+    138_000, 446_888, 138_616,
+];
+const IDS_N6G_COUNTS: [usize; 34] = [
+    289_970, 467_194, 832_725, 774_667, 832_405, 349_762, 498_925, 774_303, 498_838, 386_650,
+    861_396, 441_737, 441_678, 1_084_718, 1_644_996, 284_939, 429_717, 1_700_523, 306_587,
+    795_521, 280_532, 302_158, 306_536, 709_587, 400_341, 1_386_212, 301_986, 245_057, 1_694_936,
+    794_260, 708_822, 357_496, 1_381_063, 316_088,
+];
+const IDS_N7G_COUNTS: [usize; 34] = [
+    1_068, 3_213, 2_705, 4_613, 2_704, 1_019, 2_371, 4_635, 2_371, 2_392, 6_651, 1_811, 1_805,
+    8_085, 9_850, 1_293, 2_675, 13_193, 1_000, 4_741, 1_819, 1_002, 1_000, 4_844, 3_899, 19_153,
+    1_003, 2_172, 12_904, 4_711, 4_816, 2_536, 18_903, 1_433,
+];
+const IDS_N16G_COUNTS: [usize; 34] = [
+    36_070, 5_140, 11_660, 11_050, 12_000, 5_460, 5_700, 11_250, 5_590, 5_470, 5_450, 2_720,
+    2_860, 7_430, 9_360, 2_310, 3_960, 16_400, 2_420, 7_810, 3_290, 2_520, 2_570, 6_410, 3_750,
+    13_370, 2_580, 2_800, 16_260, 7_880, 6_420, 2_700, 13_290, 2_360,
+];
+
+fn known_ids_ng_count(n: usize, g: usize) -> Option<usize> {
+    match n {
+        5 => IDS_N5G_COUNTS.get(g).copied(),
+        6 => IDS_N6G_COUNTS.get(g).copied(),
+        7 => IDS_N7G_COUNTS.get(g).copied(),
+        16 => IDS_N16G_COUNTS.get(g).copied(),
+        _ => None,
+    }
+}
+
+fn get_random_identity_from_ids_ng(
+    n: usize,
+    gate_pair: GatePair,
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, lmdb::Database>,
+) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
+    let g = GatePair::to_int(&gate_pair);
+    let db_name = format!("ids_n{}g{}", n, g);
+    let db = match dbs.get(&db_name) {
+        Some(db) => *db,
+        None => return Err(format!("No db {}", db_name).into()),
+    };
+
+    let max_entries = match known_ids_ng_count(n, g) {
+        Some(count) if count > 0 => count,
+        _ => return Err(format!("No known count for {}", db_name).into()),
+    };
+
+    let mut rng = rand::rng();
+    let random_index = rng.random_range(0..max_entries);
+
+    let txn = env.begin_ro_txn()?;
+    let mut cursor = txn.open_ro_cursor(db)?;
+    let sampled_blob = match cursor
+        .iter_start()
+        .nth(random_index)
+        .map(|(k, _v)| k.to_vec())
+    {
+        Some(blob) => blob,
+        None => return Err(format!("Failed to sample {}", db_name).into()),
+    };
+
+    Ok(CircuitSeq::from_blob(&sampled_blob))
+}
+
+fn get_random_identity_from_legacy_ids_n(
     n: usize,
     gate_pair: GatePair,
     env: &lmdb::Environment,
@@ -170,18 +236,13 @@ fn get_random_identity(
     let db_name = format!("ids_n{}", n);
     let db = match dbs.get(&db_name) {
         Some(db) => *db,
-        None => panic!("No db {}", db_name),
+        None => return Err(format!("No db {}", db_name).into()),
     };
 
     let txn = env.begin_ro_txn()?;
-
-    // Serialize the gate_pair to use as the key
     let key_bytes = bincode::serialize(&gate_pair)
         .unwrap_or_else(|e| panic!("Failed to serialize gate pair: {}", e));
-
-    // Lookup the circuits
     let value_bytes = txn.get(db, &key_bytes)?;
-
     let circuits: Vec<Vec<u8>> = bincode::deserialize(value_bytes)
         .unwrap_or_else(|e| panic!("Failed to deserialize circuit list: {}", e));
 
@@ -189,8 +250,25 @@ fn get_random_identity(
     let blob = circuits
         .choose(&mut rng)
         .expect("Failed to choose a random circuit");
-
     Ok(CircuitSeq::from_blob(blob))
+}
+
+fn has_identity_source(n: usize, dbs: &HashMap<String, lmdb::Database>) -> bool {
+    dbs.contains_key(&format!("ids_n{}g0", n)) || dbs.contains_key(&format!("ids_n{}", n))
+}
+
+// Get a random identity circuit from LMDB database matching gate pair taxonomy
+// Ported from many_thread branch for RAC integration
+fn get_random_identity(
+    n: usize,
+    gate_pair: GatePair,
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, lmdb::Database>,
+) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
+    if let Ok(circuit) = get_random_identity_from_ids_ng(n, gate_pair, env, dbs) {
+        return Ok(circuit);
+    }
+    get_random_identity_from_legacy_ids_n(n, gate_pair, env, dbs)
 }
 
 // Returns a nontrivial identity circuit built from two "friend" circuits
@@ -1905,6 +1983,183 @@ impl GatePair {
             && gate_pair.c1 == CollisionType::OnNew
             && gate_pair.c2 == CollisionType::OnNew
     }
+
+    pub fn to_int(gp: &Self) -> usize {
+        let a = gp.a;
+        let b = gp.c1;
+        let c = gp.c2;
+
+        if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnNew {
+            0
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
+            1
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
+            2
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
+            3
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
+            4
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
+            5
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
+            6
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
+            7
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
+            8
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
+            9
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
+            10
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
+            11
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
+            12
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
+            13
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnCtrl2
+        {
+            14
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnCtrl1
+        {
+            15
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
+            16
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
+            17
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
+            18
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
+            19
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl2
+        {
+            20
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnActive
+        {
+            21
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
+            22
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
+            23
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
+            24
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
+            25
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl1
+        {
+            26
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnActive
+        {
+            27
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl1
+        {
+            28
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl2
+        {
+            29
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnActive
+        {
+            30
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnCtrl2
+        {
+            31
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnActive
+        {
+            32
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnCtrl1
+        {
+            33
+        } else {
+            panic!("Not a valid GatePair");
+        }
+    }
 }
 
 pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
@@ -2778,7 +3033,43 @@ pub fn replace_sequential_pairs(
                     }
                 }
                 fail += 1;
-                let id_len = rng.random_range(5..=7);
+                let mut id_candidates = vec![5usize, 6, 7, 16];
+                id_candidates
+                    .retain(|&id_n| id_n <= num_wires && has_identity_source(id_n, dbs));
+                if id_candidates.is_empty() {
+                    continue;
+                }
+                let id_len = if GatePair::is_none(&tax) {
+                    let r = rng.random_range(0..100);
+                    let preferred = if r < 45 {
+                        6
+                    } else if r < 90 {
+                        7
+                    } else {
+                        16
+                    };
+                    if id_candidates.contains(&preferred) {
+                        preferred
+                    } else {
+                        id_candidates[rng.random_range(0..id_candidates.len())]
+                    }
+                } else {
+                    let r = rng.random_range(0..100);
+                    let preferred = if r < 30 {
+                        5
+                    } else if r < 60 {
+                        6
+                    } else if r < 90 {
+                        7
+                    } else {
+                        16
+                    };
+                    if id_candidates.contains(&preferred) {
+                        preferred
+                    } else {
+                        id_candidates[rng.random_range(0..id_candidates.len())]
+                    }
+                };
                 let id = match get_random_identity(id_len, tax, env, dbs) {
                     Ok(id) => id,
                     Err(_) => {

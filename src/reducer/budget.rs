@@ -2,10 +2,15 @@
 //!
 //! Performs reduction operations (template deletion, adjacent cancellation,
 //! commuting swaps) but stops after a fixed budget of operations.
+//!
+//! Pass 1: Adjacent identical gate cancellation (self-inverse)
+//! Pass 2: Commuting swaps that enable cancellation
+//! Pass 3: LMDB-backed identity window detection (canonicalize + DB lookup)
 
 use crate::infra::circuit::CircuitSeq;
+use crate::infra::ids_index::{self, IDS_REV_DB};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Report from a budgeted reduction run
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,14 +93,24 @@ pub fn gates_commute(g1: &[u8; 3], g2: &[u8; 3]) -> bool {
     true
 }
 
-/// Perform budgeted reduction on a circuit
-pub fn reduce_budget(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport {
+/// Perform budgeted reduction on a circuit.
+///
+/// When an LMDB environment is provided, Pass 3 uses the `ids_rev` index
+/// to detect and remove identity windows that are too large for brute-force.
+pub fn reduce_budget(
+    c: &CircuitSeq,
+    config: &ReducerConfig,
+    env: Option<&lmdb::Environment>,
+) -> ReductionReport {
     let original_len = c.gates.len();
     let mut reduced = c.clone();
     let mut steps = 0;
     let mut cancel_pairs = 0;
     let mut commute_swaps = 0;
-    let template_hits: HashMap<usize, usize> = HashMap::new();
+    let mut template_hits: HashMap<usize, usize> = HashMap::new();
+
+    // Open ids_rev DB once for the lifetime of this reduction
+    let ids_rev_db = env.and_then(|e| e.open_db(Some(IDS_REV_DB)).ok());
 
     let mut changed = true;
 
@@ -108,12 +123,10 @@ pub fn reduce_budget(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport 
         while i < reduced.gates.len().saturating_sub(1) && steps < config.max_steps {
             steps += 1;
             if reduced.gates[i] == reduced.gates[i + 1] {
-                // Remove both gates
                 reduced.gates.remove(i + 1);
                 reduced.gates.remove(i);
                 cancel_pairs += 1;
                 changed = true;
-                // Don't increment i, check same position again
             } else {
                 i += 1;
             }
@@ -123,9 +136,7 @@ pub fn reduce_budget(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport 
         let mut i = 0;
         while i < reduced.gates.len().saturating_sub(2) && steps < config.max_steps {
             steps += 1;
-            // If gates[i] and gates[i+1] commute, and swapping enables a cancel
             if gates_commute(&reduced.gates[i], &reduced.gates[i + 1]) {
-                // Check if swapping would enable a cancellation
                 let would_cancel_left = i > 0 && reduced.gates[i - 1] == reduced.gates[i + 1];
                 let would_cancel_right =
                     i + 2 < reduced.gates.len() && reduced.gates[i] == reduced.gates[i + 2];
@@ -139,8 +150,41 @@ pub fn reduce_budget(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport 
             i += 1;
         }
 
-        // TODO: Pass 3: Template-based reduction (requires template DB)
-        // For now, skip template matching
+        // Pass 3: Identity window detection via LMDB lookup
+        if let (Some(e), Some(db)) = (env, ids_rev_db) {
+            'template_scan: for &w_len in &config.window_sizes {
+                if reduced.gates.len() < w_len || steps >= config.max_steps {
+                    continue;
+                }
+                for i in 0..=reduced.gates.len() - w_len {
+                    steps += 1;
+                    if steps >= config.max_steps {
+                        break 'template_scan;
+                    }
+
+                    let window = &reduced.gates[i..i + w_len];
+
+                    // Count active wires to skip trivially wide windows
+                    let mut active = HashSet::new();
+                    for g in window {
+                        active.insert(g[0]);
+                        active.insert(g[1]);
+                        active.insert(g[2]);
+                    }
+                    if active.len() > config.max_template_m {
+                        continue;
+                    }
+
+                    // Canonicalize and query DB
+                    if ids_index::ids_rev_contains(e, db, window) {
+                        reduced.gates.drain(i..i + w_len);
+                        *template_hits.entry(w_len).or_insert(0) += 1;
+                        changed = true;
+                        break 'template_scan; // indices invalidated, restart
+                    }
+                }
+            }
+        }
     }
 
     let reduced_len = reduced.gates.len();
@@ -160,6 +204,11 @@ pub fn reduce_budget(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport 
         commute_swaps,
         steps_taken: steps,
     }
+}
+
+/// Backward-compatible wrapper for callers that don't have an LMDB environment.
+pub fn reduce_budget_no_db(c: &CircuitSeq, config: &ReducerConfig) -> ReductionReport {
+    reduce_budget(c, config, None)
 }
 
 #[cfg(test)]
@@ -192,7 +241,7 @@ mod tests {
         };
 
         let config = ReducerConfig::default();
-        let report = reduce_budget(&c, &config);
+        let report = reduce_budget(&c, &config, None);
 
         assert_eq!(report.original_len, 3);
         assert_eq!(report.reduced_len, 1);

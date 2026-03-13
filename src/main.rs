@@ -20,18 +20,23 @@ const LMDB_DB_NAMES: &[&str] = &[
 ];
 use local_mixing::algorithms::butterfly::replace::compress_big_ancillas;
 use local_mixing::analysis::alignment::{distance_matrix, dtw_alignment, trace_states};
+use local_mixing::analysis::heatmap_metrics::{
+    correlated_inputs_heatmap, gradient_distance_heatmap, hamming_weight_heatmap,
+    windowed_min_heatmap,
+};
 use local_mixing::{
     algorithms::annealing::local::{MixConfig, ReduceConfig, mix_circuit, reduce_circuit},
     algorithms::butterfly::{
         mixing::{
-            install_kill_handler, main_butterfly, main_butterfly_big,
+            install_kill_handler, main_btb, main_butterfly, main_butterfly_big,
             main_butterfly_big_bookendsless, main_mix, main_rac_big,
         },
         replace::random_canonical_id,
     },
     algorithms::identity_growth::{IdentityGrowthConfig, TemplateSource, grow_identity},
     algorithms::local_rewrite::{LocalRewriteConfig, PermTableOracle, run_local_rewrite},
-    config::ObfuscationConfig,
+    algorithms::shuffle_bitflip::{ShuffleBitflipGenerator, ShuffleBitflipState},
+    config::{FlipMode, ObfuscationConfig, ShuffleBitflipConfig},
     infra::circuit::{CircuitSeq, Gate},
     infra::ids_index::build_ids_indexes,
     infra::random::random_data::{
@@ -46,6 +51,99 @@ use std::{
     io::{self, BufWriter, Write},
     path::Path,
 };
+
+/// Parse --flip-mode / --shuffle-seed from a subcommand and apply shuffle wrapping.
+/// Returns (wrapped_circuit, shuffle_state) if shuffle is enabled.
+fn apply_shuffle_premix(
+    sub: &clap::ArgMatches,
+    circuit: &CircuitSeq,
+    n: usize,
+) -> (CircuitSeq, Option<ShuffleBitflipState>) {
+    let flip_mode = sub
+        .get_one::<String>("flip-mode")
+        .map(|s| s.as_str())
+        .unwrap_or("none");
+
+    if flip_mode == "none" {
+        return (circuit.clone(), None);
+    }
+
+    let config = ShuffleBitflipConfig {
+        enabled: true,
+        flip_mode: match flip_mode {
+            "separate" => FlipMode::Separate,
+            "embedded" => FlipMode::Embedded,
+            _ => FlipMode::None,
+        },
+        ..ShuffleBitflipConfig::default()
+    };
+
+    let mut rng: StdRng = match sub.get_one::<u64>("shuffle-seed") {
+        Some(seed) => SeedableRng::seed_from_u64(*seed),
+        None => SeedableRng::from_rng(&mut rand::rng()),
+    };
+
+    let generator = ShuffleBitflipGenerator::new(n, config);
+    let (premix_circuit, permutation, flip_mask) = generator.generate_random(&mut rng);
+
+    println!(
+        "Pre-mix B_{{w,s}} applied: {} gates, perm={:?}, flip={:?}",
+        premix_circuit.gates.len(),
+        &permutation[..std::cmp::min(8, permutation.len())],
+        &flip_mask[..std::cmp::min(8, flip_mask.len())]
+    );
+
+    let mut combined_gates = premix_circuit.gates;
+    combined_gates.extend(circuit.gates.iter().cloned());
+    let wrapped = CircuitSeq { gates: combined_gates };
+
+    let state = ShuffleBitflipState {
+        permutation,
+        flip_mask,
+    };
+    (wrapped, Some(state))
+}
+
+/// Append the inverse shuffle B_{w,s}^{-1} to the circuit.
+fn apply_shuffle_postmix(
+    sub: &clap::ArgMatches,
+    circuit: &mut CircuitSeq,
+    state: &ShuffleBitflipState,
+    n: usize,
+) {
+    let flip_mode = sub
+        .get_one::<String>("flip-mode")
+        .map(|s| s.as_str())
+        .unwrap_or("embedded");
+    let config = ShuffleBitflipConfig {
+        enabled: true,
+        flip_mode: match flip_mode {
+            "separate" => FlipMode::Separate,
+            "embedded" => FlipMode::Embedded,
+            _ => FlipMode::Embedded,
+        },
+        ..ShuffleBitflipConfig::default()
+    };
+
+    let mut rng: StdRng = match sub.get_one::<u64>("shuffle-seed") {
+        Some(seed) => SeedableRng::seed_from_u64(seed.wrapping_add(1)),
+        None => SeedableRng::from_rng(&mut rand::rng()),
+    };
+
+    let generator = ShuffleBitflipGenerator::new(n, config);
+    let inverse_circuit = generator.generate_inverse(
+        &state.permutation,
+        &state.flip_mask,
+        &mut rng,
+    );
+
+    println!(
+        "Post-mix B_{{w,s}}^{{-1}} appended: {} gates",
+        inverse_circuit.gates.len()
+    );
+
+    circuit.gates.extend(inverse_circuit.gates);
+}
 
 struct BitPacker<W: Write> {
     out: W,
@@ -374,6 +472,74 @@ fn main() {
                     .default_value("./progress/rac_intermediate.txt")
                     .value_parser(clap::value_parser!(String))
                     .help("Intermediate progress file path"),
+            )
+            .arg(
+                Arg::new("flip-mode")
+                    .long("flip-mode")
+                    .value_parser(["none", "separate", "embedded"])
+                    .default_value("none")
+                    .help("Shuffle+bitflip mode: none, separate (Style A), embedded (Style B)"),
+            )
+            .arg(
+                Arg::new("shuffle-seed")
+                    .long("shuffle-seed")
+                    .value_parser(clap::value_parser!(u64))
+                    .help("Random seed for shuffle (reproducibility)"),
+            ),
+    )
+    .subcommand(
+        Command::new("btb")
+            .about("Obfuscate via BTB (Back To Basics) method — Issue #47")
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("n")
+                    .default_value("32")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires (default: 32)"),
+            )
+            .arg(
+                Arg::new("save")
+                    .short('s')
+                    .long("save")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Output file path"),
+            )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i')
+                    .long("intermediate")
+                    .default_value("./progress/btb_intermediate.txt")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Intermediate progress file path"),
+            )
+            .arg(
+                Arg::new("m-star")
+                    .long("m-star")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Override m*(n) — gates per R-block (default: auto from diehard data)"),
+            )
+            .arg(
+                Arg::new("flip-mode")
+                    .long("flip-mode")
+                    .value_parser(["none", "separate", "embedded"])
+                    .default_value("none")
+                    .help("Shuffle+bitflip mode: none, separate (Style A), embedded (Style B)"),
+            )
+            .arg(
+                Arg::new("shuffle-seed")
+                    .long("shuffle-seed")
+                    .value_parser(clap::value_parser!(u64))
+                    .help("Random seed for shuffle (reproducibility)"),
             ),
     )
     .subcommand(
@@ -679,6 +845,44 @@ fn main() {
                         .help("Do not canonicalize circuits before processing (default: canonicalize)")
                         .action(ArgAction::SetTrue),
                 ),
+        )
+        .subcommand(
+            Command::new("heatmap-gradient")
+                .about("Gradient distance heatmap: measures local change in HD (Issue #44)")
+                .arg(Arg::new("inputs").short('i').long("inputs").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("num_wires").short('n').long("num_wires").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("c1").long("c1").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("c2").long("c2").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("raw").long("raw").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("heatmap-hw")
+                .about("Hamming weight difference heatmap: detects pure shuffles (Issue #44)")
+                .arg(Arg::new("inputs").short('i').long("inputs").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("num_wires").short('n').long("num_wires").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("c1").long("c1").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("c2").long("c2").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("raw").long("raw").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("heatmap-windowed")
+                .about("Windowed minimum HD heatmap: smooths local mixing (Issue #44)")
+                .arg(Arg::new("inputs").short('i').long("inputs").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("num_wires").short('n').long("num_wires").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("c1").long("c1").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("c2").long("c2").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("window").short('d').long("window").required(true).value_parser(clap::value_parser!(usize)).help("Window size d"))
+                .arg(Arg::new("raw").long("raw").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("heatmap-correlated")
+                .about("Correlated inputs heatmap: fix n-k wires, vary k (Issue #44)")
+                .arg(Arg::new("num_wires").short('n').long("num_wires").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("c1").long("c1").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("c2").long("c2").required(true).value_parser(clap::value_parser!(String)))
+                .arg(Arg::new("k").short('k').long("k").required(true).value_parser(clap::value_parser!(usize)).help("Number of free wires"))
+                .arg(Arg::new("bases").long("bases").required(true).value_parser(clap::value_parser!(usize)).help("Number of random base inputs"))
+                .arg(Arg::new("raw").long("raw").action(ArgAction::SetTrue)),
         )
         .subcommand(
             Command::new("align")
@@ -1382,7 +1586,10 @@ fn main() {
             // Read the input circuit
             let data = fs::read_to_string(path)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", path));
-            let c = CircuitSeq::from_string(&data);
+            let c_orig = CircuitSeq::from_string(&data);
+
+            // Apply optional shuffle pre-mix
+            let (c, shuffle_state) = apply_shuffle_premix(sub, &c_orig, n);
 
             println!("Running RAC on circuit with {} wires, {} gates", n, c.gates.len());
 
@@ -1424,6 +1631,72 @@ fn main() {
 
             // Run RAC
             main_rac_big(&c, rounds, &mut conn, n, save, &env, intermediate);
+
+            // Append inverse shuffle if pre-mix was applied
+            if let Some(ref state) = shuffle_state {
+                let result_data = fs::read_to_string(save)
+                    .expect("Failed to read RAC output for shuffle postmix");
+                let mut result_circuit = CircuitSeq::from_string(&result_data);
+                apply_shuffle_postmix(sub, &mut result_circuit, state, n);
+
+                // Verify equivalence with original (un-shuffled) circuit
+                if let Err(e) = result_circuit.probably_equal(&c_orig, n, 150_000) {
+                    println!("WARNING: shuffle-wrapped circuit differs from original! {:?}", e);
+                }
+
+                let circuit_str = result_circuit.repr();
+                std::fs::File::create(save)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, circuit_str.as_bytes()))
+                    .expect("Failed to write shuffle-wrapped circuit");
+                println!("Shuffle-wrapped circuit written to {} ({} gates)", save, result_circuit.gates.len());
+            }
+        }
+        Some(("btb", sub)) => {
+            let path: &String = sub.get_one("path").unwrap();
+            let n: usize = *sub.get_one("n").unwrap();
+            let save: &String = sub.get_one("save").unwrap();
+            let intermediate: &String = sub.get_one("intermediate").unwrap();
+            let m_star_override: Option<usize> = sub.get_one("m-star").copied();
+
+            // Read the input circuit
+            let data = fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", path));
+            let c_orig = CircuitSeq::from_string(&data);
+
+            // Apply optional shuffle pre-mix
+            let (c, shuffle_state) = apply_shuffle_premix(sub, &c_orig, n);
+
+            println!("Running BTB on circuit with {} wires, {} gates", n, c.gates.len());
+
+            // Open LMDB environment
+            let lmdb_path = "./db";
+            let env = lmdb::Environment::new()
+                .set_max_dbs(400)
+                .set_map_size(700 * 1024 * 1024 * 1024)
+                .open(Path::new(lmdb_path))
+                .expect("Failed to open lmdb");
+
+            // Run BTB
+            main_btb(&c, n, save, &env, intermediate, m_star_override);
+
+            // Append inverse shuffle if pre-mix was applied
+            if let Some(ref state) = shuffle_state {
+                let result_data = fs::read_to_string(save)
+                    .expect("Failed to read BTB output for shuffle postmix");
+                let mut result_circuit = CircuitSeq::from_string(&result_data);
+                apply_shuffle_postmix(sub, &mut result_circuit, state, n);
+
+                // Verify equivalence with original (un-shuffled) circuit
+                if let Err(e) = result_circuit.probably_equal(&c_orig, n, 150_000) {
+                    println!("WARNING: shuffle-wrapped circuit differs from original! {:?}", e);
+                }
+
+                let circuit_str = result_circuit.repr();
+                std::fs::File::create(save)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, circuit_str.as_bytes()))
+                    .expect("Failed to write shuffle-wrapped circuit");
+                println!("Shuffle-wrapped circuit written to {} ({} gates)", save, result_circuit.gates.len());
+            }
         }
         Some(("ids-index", sub)) => {
             let db_path: &String = sub.get_one("db").unwrap();
@@ -2214,6 +2487,98 @@ fn main() {
                 "heatmap_data": data,
                 "x_size": c1.gates.len() + 1,
                 "y_size": c2.gates.len() + 1
+            });
+            println!("{}", output);
+        }
+
+        Some(("heatmap-gradient", sub)) => {
+            let n = *sub.get_one::<usize>("num_wires").unwrap();
+            let inputs = *sub.get_one::<usize>("inputs").unwrap();
+            let c1_path = sub.get_one::<String>("c1").unwrap();
+            let c2_path = sub.get_one::<String>("c2").unwrap();
+            let c1 = CircuitSeq::from_string(
+                fs::read_to_string(c1_path).expect("Failed to read c1").trim(),
+            );
+            let c2 = CircuitSeq::from_string(
+                fs::read_to_string(c2_path).expect("Failed to read c2").trim(),
+            );
+            let canonicalize = !sub.get_flag("raw");
+            let data = gradient_distance_heatmap(&c1, &c2, n, inputs, canonicalize);
+            let output = serde_json::json!({
+                "heatmap_data": data,
+                "x_size": c1.gates.len() + 1,
+                "y_size": c2.gates.len() + 1,
+                "metric": "gradient",
+            });
+            println!("{}", output);
+        }
+
+        Some(("heatmap-hw", sub)) => {
+            let n = *sub.get_one::<usize>("num_wires").unwrap();
+            let inputs = *sub.get_one::<usize>("inputs").unwrap();
+            let c1_path = sub.get_one::<String>("c1").unwrap();
+            let c2_path = sub.get_one::<String>("c2").unwrap();
+            let c1 = CircuitSeq::from_string(
+                fs::read_to_string(c1_path).expect("Failed to read c1").trim(),
+            );
+            let c2 = CircuitSeq::from_string(
+                fs::read_to_string(c2_path).expect("Failed to read c2").trim(),
+            );
+            let canonicalize = !sub.get_flag("raw");
+            let data = hamming_weight_heatmap(&c1, &c2, n, inputs, canonicalize);
+            let output = serde_json::json!({
+                "heatmap_data": data,
+                "x_size": c1.gates.len() + 1,
+                "y_size": c2.gates.len() + 1,
+                "metric": "hamming_weight",
+            });
+            println!("{}", output);
+        }
+
+        Some(("heatmap-windowed", sub)) => {
+            let n = *sub.get_one::<usize>("num_wires").unwrap();
+            let inputs = *sub.get_one::<usize>("inputs").unwrap();
+            let d = *sub.get_one::<usize>("window").unwrap();
+            let c1_path = sub.get_one::<String>("c1").unwrap();
+            let c2_path = sub.get_one::<String>("c2").unwrap();
+            let c1 = CircuitSeq::from_string(
+                fs::read_to_string(c1_path).expect("Failed to read c1").trim(),
+            );
+            let c2 = CircuitSeq::from_string(
+                fs::read_to_string(c2_path).expect("Failed to read c2").trim(),
+            );
+            let canonicalize = !sub.get_flag("raw");
+            let data = windowed_min_heatmap(&c1, &c2, n, inputs, d, canonicalize);
+            let output = serde_json::json!({
+                "heatmap_data": data,
+                "x_size": c1.gates.len() + 1,
+                "y_size": c2.gates.len() + 1,
+                "metric": "windowed_min",
+                "params": {"window_d": d},
+            });
+            println!("{}", output);
+        }
+
+        Some(("heatmap-correlated", sub)) => {
+            let n = *sub.get_one::<usize>("num_wires").unwrap();
+            let k = *sub.get_one::<usize>("k").unwrap();
+            let bases = *sub.get_one::<usize>("bases").unwrap();
+            let c1_path = sub.get_one::<String>("c1").unwrap();
+            let c2_path = sub.get_one::<String>("c2").unwrap();
+            let c1 = CircuitSeq::from_string(
+                fs::read_to_string(c1_path).expect("Failed to read c1").trim(),
+            );
+            let c2 = CircuitSeq::from_string(
+                fs::read_to_string(c2_path).expect("Failed to read c2").trim(),
+            );
+            let canonicalize = !sub.get_flag("raw");
+            let data = correlated_inputs_heatmap(&c1, &c2, n, k, bases, canonicalize);
+            let output = serde_json::json!({
+                "heatmap_data": data,
+                "x_size": c1.gates.len() + 1,
+                "y_size": c2.gates.len() + 1,
+                "metric": "correlated_inputs",
+                "params": {"k": k, "bases": bases},
             });
             println!("{}", output);
         }

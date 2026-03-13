@@ -233,7 +233,7 @@ pub fn energy_slow(c: &CircuitSeq, params: &AnnealParams) -> f64 {
         ..Default::default()
     };
 
-    let report = reduce_budget(c, &config);
+    let report = reduce_budget(c, &config, None);
     let compression = 1.0 - report.compression_ratio; // Lower compression = harder to reduce = lower energy
     let coverage = wire_coverage(c, params.n_wires);
 

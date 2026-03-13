@@ -6,7 +6,10 @@ db
 circuits.db*
 *.txt
 *.sh
+!scripts/scc/*.sh
 *.png*
+__pycache__/
+_scratch/
 .venv/
 id_rsa
 id_rsa.pub

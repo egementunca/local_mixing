@@ -1011,6 +1011,25 @@ pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
+/// Shoots a gate right as far as possible without colliding and returns final position
+pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
+    let len = circuit.len();
+    let mut target = gate_idx;
+    while target + 1 < len {
+        if Gate::collides_index(&circuit[target + 1], &circuit[gate_idx]) {
+            break;
+        }
+        target += 1;
+    }
+
+    if target != gate_idx {
+        let gate = circuit.remove(gate_idx);
+        circuit.insert(target, gate);
+    }
+
+    target
+}
+
 /// Shoots a random gate left or right as far as possible without colliding
 pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
     let mut rng = rand::rng();

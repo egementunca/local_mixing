@@ -2,6 +2,15 @@ use crate::infra::circuit::circuit::CircuitSeq;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of concurrent SAT Python processes.
+/// Override with SAT_MAX_PARALLEL env var (default: 4).
+fn sat_max_parallel() -> usize {
+    std::env::var("SAT_MAX_PARALLEL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4)
+}
+
 #[derive(Serialize)]
 struct SatRequest {
     num_inputs: usize,
@@ -76,21 +85,33 @@ pub fn compute_canonical_hash(subcircuit: &CircuitSeq, num_wires: usize) -> [u8;
 
 /// Parallel SAT compression: processes multiple subcircuits concurrently.
 /// Returns a list of (original_index, optimized_circuit) pairs.
+///
+/// Parallelism is capped by SAT_MAX_PARALLEL (env var, default 4) to avoid
+/// spawning hundreds of Python processes when Rayon has many threads.
 pub fn compress_sat_run_batch(
     subcircuits: Vec<(usize, CircuitSeq, usize)>, // (start_idx, circuit, num_wires)
     timeout_secs: u64,
 ) -> Vec<(usize, CircuitSeq)> {
-    subcircuits
-        .into_par_iter()
-        .filter_map(|(idx, subcircuit, num_wires)| {
-            let result = compress_sat_run(&subcircuit, num_wires, timeout_secs)?;
-            if result.gates.len() < subcircuit.gates.len() {
-                Some((idx, result))
-            } else {
-                None
-            }
-        })
-        .collect()
+    // Build a dedicated thread pool with limited parallelism for SAT calls
+    let max_par = sat_max_parallel();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_par)
+        .build()
+        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
+
+    pool.install(|| {
+        subcircuits
+            .into_par_iter()
+            .filter_map(|(idx, subcircuit, num_wires)| {
+                let result = compress_sat_run(&subcircuit, num_wires, timeout_secs)?;
+                if result.gates.len() < subcircuit.gates.len() {
+                    Some((idx, result))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    })
 }
 
 pub fn compress_sat_run(
@@ -145,10 +166,18 @@ pub fn compress_sat_run(
     let json_req = serde_json::to_string(&request).unwrap();
 
     // 3. Call Python script
-    // We assume the script is at "../sat_revsynth/scripts/synthesize_from_tt.py" relative to current dir
-    // This works if running from research-group/local_mixing/
+    // Resolve path: SAT_REVSYNTH_SCRIPT env var > relative to binary > relative to cwd
+    let script_path = resolve_sat_script_path();
+    if !std::path::Path::new(&script_path).exists() {
+        eprintln!(
+            "SAT script not found at: {}. Set SAT_REVSYNTH_SCRIPT env var to the correct path.",
+            script_path
+        );
+        return None;
+    }
+
     let mut child = std::process::Command::new("python3")
-        .arg("../sat_revsynth/scripts/synthesize_from_tt.py")
+        .arg(&script_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -192,4 +221,42 @@ pub fn compress_sat_run(
     }
 
     None
+}
+
+/// Resolve the path to the SAT synthesis Python script.
+///
+/// Search order:
+///   1. `SAT_REVSYNTH_SCRIPT` environment variable (absolute path)
+///   2. Relative to the running binary: `../../sat_revsynth/scripts/synthesize_from_tt.py`
+///   3. Relative to current working directory: `../sat_revsynth/scripts/synthesize_from_tt.py`
+fn resolve_sat_script_path() -> String {
+    const SCRIPT_NAME: &str = "scripts/synthesize_from_tt.py";
+
+    // 1. Explicit env var
+    if let Ok(path) = std::env::var("SAT_REVSYNTH_SCRIPT") {
+        return path;
+    }
+
+    // 2. SAT_REVSYNTH_PATH env var (directory of sat_revsynth repo)
+    if let Ok(dir) = std::env::var("SAT_REVSYNTH_PATH") {
+        let candidate = std::path::PathBuf::from(&dir).join(SCRIPT_NAME);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+
+    // 3. Relative to binary location (e.g. target/release/../../sat_revsynth/)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir
+                .join("../../sat_revsynth")
+                .join(SCRIPT_NAME);
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // 4. Fallback: relative to cwd (original behavior)
+    String::from("../sat_revsynth/scripts/synthesize_from_tt.py")
 }

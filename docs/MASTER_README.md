@@ -17,7 +17,7 @@ Primary workflows:
 - `local_mixing/src/main.rs`: CLI entrypoint and command wiring. Handles SQLite/LMDB loading and writes standard output artifacts (for example `recent_circuit.txt`).
 - `local_mixing/src/lib.rs`: module exports.
 - `local_mixing/src/config.rs`: `ObfuscationConfig` (butterfly family) and `ObfConfig` (obfuscate pipeline).
-- `local_mixing/src/algorithms/butterfly/mixing.rs`: butterfly, butterfly_big, abbutterfly_big, bookendless variant, merging, final compression, kill handler.
+- `local_mixing/src/algorithms/butterfly/mixing.rs`: RAC (`main_rac_big`), butterfly, butterfly_big, abbutterfly_big, bookendless variant, merging, final compression, kill handler.
 - `local_mixing/src/algorithms/butterfly/replace.rs`: identity generation, pair replacement, random gate replacement, convex subcircuit selection, expand/compress logic, SAT/LMDB compression, timers.
 - `local_mixing/src/algorithms/annealing/anneal.rs`: simulated annealing engine (moves, energy, stats). Not wired to the CLI yet.
 - `local_mixing/src/algorithms/annealing/local.rs`: local mixing MVP and local reducer; used by `local-mix` CLI.
@@ -130,7 +130,13 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 
 ## 4. Algorithms (Current)
 
-### 4.1 Butterfly family (obfuscation + compression)
+### 4.1 RAC (current working obfuscation path)
+- `main_rac_big`: orchestrates Replace-And-Compress rounds with progress output.
+- `replace_and_compress_big`: combines sequential pair replacement and chunked compression.
+- `replace_sequential_pairs`: taxonomy-based pair replacement using IDs DBs.
+- This path is exposed by CLI command `rac`.
+
+### 4.2 Butterfly family (obfuscation + compression)
 - `butterfly`: wraps each gate with a fixed random identity and compresses outward.
 - `butterfly_big` (bbutterfly):
   - `replace_pairs` and optional `random_gate_replacements`.
@@ -139,8 +145,9 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
   - merge blocks, add bookends, final compression loop.
 - `abbutterfly_big`: asymmetric chain of `R` values per gate, plus block compression and merge. Supports SAT mode and LMDB-first SAT.
 - `abbutterfly_big_bookendsless`: delays bookends and compresses midstream, then optional final compression.
+- `B_{w,s}` shuffle+bit-flip pre/post stage is wired in this path only.
 
-### 4.2 Compression and expansion
+### 4.3 Compression and expansion
 - `expand_big`: rewires subcircuits to use extra wires (ancillas) before compression.
 - `compress_big`: convex subcircuit selection; currently uses a placeholder `subcircuit.clone()` (LMDB path is commented out).
 - `compress_lmdb`: full LMDB/SQLite compression using canonicalization and `n{N}m{M}perms` tables.
@@ -149,40 +156,40 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 - `compress_big_ancillas`: ancilla expansion plus `compress_lmdb`.
 - `compress`: small subcircuit compression using SQLite lookups.
 
-### 4.3 Pair replacement and shooting
+### 4.4 Pair replacement and shooting
 - `replace_pairs`: taxonomy-based replacement of adjacent gate pairs with identity templates (TemplateDB or `random_canonical_id`).
 - `random_gate_replacements`: optional single-gate expansion using identity templates.
 - `shoot_random_gate`: random gate insertions to add noise.
 
-### 4.4 Local mixing (annealing/local.rs)
+### 4.5 Local mixing (annealing/local.rs)
 - `mix_circuit`: repeated local moves (template insertion, commuting swaps, patch pairs).
 - `reduce_circuit`: cancellation + commuting swaps + small-window identity checks.
 
-### 4.5 Annealed obfuscator (annealing/anneal.rs)
+### 4.6 Annealed obfuscator (annealing/anneal.rs)
 Defines a full simulated annealing engine (moves, energy functions, stats), but it is not wired to CLI entrypoints yet.
 - `energy_fast` uses adjacent-cancel rate + wire coverage; witness-hit scoring is not implemented.
 - `energy_slow` calls `reducer::reduce_budget` and uses compression ratio + coverage.
 - Template insertion uses synthetic identity pairs; `lmdb_path` is currently unused.
 - See `local_mixing/src/algorithms/annealing/README.md` for full status and gaps.
 
-### 4.6 Obfuscate pipeline (obfuscate/*)
+### 4.7 Obfuscate pipeline (obfuscate/*)
 - Segmentation -> gadget injection -> noise -> simple compression -> verification.
 - Conjugation and wire permutation are disabled in code because they change the global function without additional wrapping.
 
-### 4.7 Reducers
+### 4.8 Reducers
 - `reducer/budget.rs`: budgeted cancellation + commute (template matching TODO).
 - `algorithms/annealing/local.rs`: includes a window identity detector for small active wire sets.
 
-### 4.8 Hashing and canonicalization
+### 4.9 Hashing and canonicalization
 - `hashing/canonical.rs`: canonical window hash and an LRU-ish energy cache.
 - `infra/rainbow/canonical.rs`: permutation canonicalization (`fast_canon` + `brute_canonical`), caching, `CircuitSeq::canonicalize`.
 
-### 4.9 Analysis and metrics
+### 4.10 Analysis and metrics
 - Heatmap generation: `generate_heatmap_data` (normalized Hamming distance across gate positions).
 - Alignment: DTW in `analysis/alignment/mod.rs` with a distance matrix over traced states.
 - Metrics: `ObfReport` and `BenchmarkStats` for obfuscation evaluation.
 
-### 4.10 Wire shuffle + bit-flip pre-mix (B_{w,s})
+### 4.11 Wire shuffle + bit-flip pre-mix (B_{w,s})
 - Generator: `local_mixing/src/algorithms/shuffle_bitflip.rs` implements `B_{w,s}` with Style A (explicit flip layer) or Style B (swap-with-flip gadgets).
 - Integration: `abbutterfly_big` prepends a random `B_{w,s}` when enabled and appends its inverse post-mix.
 - Modes: `flip_mode=none` disables pre-mix shuffle.
@@ -199,6 +206,7 @@ Core commands:
 - `gen --wires N --length M`: print a random circuit to stdout (compact format).
 - `mix -r ROUNDS`: obfuscate and target-compress `initial.txt`.
 - `butterfly -r ROUNDS`: standard butterfly.
+- `rac -p PATH -r ROUNDS -n WIRES -s SAVE`: Replace-And-Compress obfuscation path.
 - `bbutterfly`: big butterfly with CLI flags for shooting, ancillas, single-gate, config.
 - `abbutterfly`: asymmetric big butterfly with `--sat`, `--bookendless`, `--lmdb-db`, `--config`.
 - `abbutterfly` optional pre-mix flags: `--flip-mode`, `--flip-scope`, `--shuffle-seed`, `--gadget-library`, `--flip-probability`.

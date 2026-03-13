@@ -8,6 +8,11 @@ This document focuses on method-level details, experiment tooling, and forward p
 - Read Section 5 for scripts and reproducible experiment patterns.
 - Read Section 6 for the future roadmap distilled from `local_mixing/local_mix_notes_future_plan.md`.
 
+Current branch reality:
+- `rac` is the latest working obfuscation command path.
+- `abbutterfly` remains available as an older alternate path.
+- `B_{w,s}` shuffle+bit-flip is wired only for `abbutterfly`, not for `rac`.
+
 ## 1. Obfuscation Methods (Current State)
 
 Each item lists the mechanics, knobs, and concrete code entry points.
@@ -61,38 +66,47 @@ Note: `--lmdb-db` points to the TemplateDB (`collection.lmdb`). The local_mixing
 - Controls: `--flip-mode`, `--flip-scope` (only `global` wired), `--shuffle-seed`, `--gadget-library`, `--flip-probability`.
 - Code: `local_mixing/src/algorithms/shuffle_bitflip.rs` and `abbutterfly_big` in `local_mixing/src/algorithms/butterfly/mixing.rs`.
 
-## 2. Butterfly Variants and Local Mixing
+## 2. RAC and Butterfly Variants
 
-### 2.1 `butterfly`
+### 2.1 `rac` (current working path)
+- Pipeline: iterative replace-and-compress rounds (`replace_and_compress_big`) with sequential pair replacement, chunked compression, and progress tracking.
+- Core behavior:
+  - Pair taxonomy-based identity insertion via LMDB IDs DBs.
+  - Shooting/reordering to expose replacement opportunities.
+  - Repeated compression loops with chunk splitting and stability checks.
+- Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`main_rac_big`, `replace_and_compress_big`) and `local_mixing/src/algorithms/butterfly/replace.rs` (`replace_sequential_pairs`).
+
+### 2.2 `butterfly`
 - Pipeline: `random_id` generates a single `R` and `R_inv`, each gate is compressed via `outward_compress`, then blocks are merged, bookends are added, and final compression runs until stable.
 - Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`butterfly`, `outward_compress`, `main_butterfly`).
 
-### 2.2 `bbutterfly` (big butterfly)
+### 2.3 `bbutterfly` (big butterfly)
 - Pipeline: `replace_pairs` (perm-table identities) -> optional `random_gate_replacements` -> global `shoot_random_gate` -> per-gate blocks `R_inv · g · R` -> optional `expand_big` -> `compress_big` (or SAT if enabled) -> merge -> bookends -> final chunked compression.
 - Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`butterfly_big`, `main_butterfly_big`).
 
-### 2.3 `abbutterfly` (asymmetric big butterfly)
+### 2.4 `abbutterfly` (asymmetric big butterfly, older alternate path)
 - Pipeline: chain of random `R` values per gate to break symmetry (`prev_r_inv`), then block compression (SAT or LMDB-first SAT), merge, add bookends `first_r` and `prev_r_inv`, and run chunked final compression.
 - Template sourcing: `replace_pairs` uses TemplateDB when `--lmdb-db` is provided; otherwise falls back to perm tables.
+- Optional `B_{w,s}` pre/post stage is available only here (`--flip-mode` etc.), not in `rac`.
 - Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`abutterfly_big`).
 
-### 2.4 `abbutterfly --bookendless`
+### 2.5 `abbutterfly --bookendless`
 - Pipeline: `abutterfly_big_delay_bookends` in each round, then optional final compression on halves and the full circuit (if `skip_compression` is false).
 - Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`abutterfly_big_delay_bookends`, `main_butterfly_big_bookendsless`).
 
-### 2.5 `mix`
+### 2.6 `mix`
 - Pipeline: `obfuscate_and_target_compress` wraps each gate with a fixed random identity `R · R_inv`, then compresses each `r_inv · g · r_next` slice before final global compression.
 - Code: `local_mixing/src/algorithms/butterfly/mixing.rs` (`main_mix`, `obfuscate_and_target_compress`).
 
-### 2.6 `local-mix`
+### 2.7 `local-mix`
 - Pipeline: `mix_step` applies stochastic moves (template insertion, commuting swaps, patch pairs), then `reduce_circuit` measures compression ratio with a local attacker model.
 - Code: `local_mixing/src/algorithms/annealing/local.rs`.
 
-### 2.7 `obfuscate`
+### 2.8 `obfuscate`
 - Pipeline: segmentation -> commutator gadget injection -> noise to target overhead -> `simple_compress` -> optional verification.
 - Code: `local_mixing/src/obfuscate/passes.rs`.
 
-### 2.8 `local-rewrite` (experimental)
+### 2.9 `local-rewrite` (experimental)
 - Pipeline: two-stage local rewrite (inflation + kneading) with attack-aligned metrics.
 - Uses a perm-table oracle (LMDB) when available; otherwise falls back to conservative local moves.
 - Intended as an experimental, theory-aligned prototype; not part of the main production obfuscation schemes.
