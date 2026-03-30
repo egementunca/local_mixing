@@ -141,6 +141,7 @@ class ReplicateResult:
     duration_sec: float
     stream_bytes: int = 0
     error: Optional[str] = None
+    alg_degree: Optional[int] = None  # minimum algebraic degree over all output wires
 
 
 @dataclass
@@ -265,6 +266,10 @@ def run_dieharder_pipe(test_id, wires, gates, seed, mode, burn_in,
 
     gen_cmd_prefix: override for CARGO_RUN (e.g. path to pre-compiled binary).
     ntuple: if set, pass -n to dieharder. Required for tests 200-203.
+
+    Returns: (List[TestResult], Optional[int]) -- test results and alg_degree_min.
+    alg_degree_min is parsed from the generator's stderr output (printed by the
+    Rust binary before streaming). It is None if not found (e.g. old binary).
     """
     prefix = gen_cmd_prefix or CARGO_RUN
     gen_cmd = prefix + [
@@ -306,7 +311,15 @@ def run_dieharder_pipe(test_id, wires, gates, seed, mode, burn_in,
         gen_proc.terminate()
         gen_proc.wait()
 
-    return parse_dieharder_output(dh_stdout.decode(), test_id)
+    # Parse algebraic degree from generator stderr.
+    # The Rust binary prints "alg_degree_min=N" before streaming.
+    gen_stderr = gen_proc.stderr.read().decode(errors="replace")
+    alg_degree = None
+    m = re.search(r'alg_degree_min=(\d+)', gen_stderr)
+    if m:
+        alg_degree = int(m.group(1))
+
+    return parse_dieharder_output(dh_stdout.decode(), test_id), alg_degree
 
 
 def run_single_replicate(
@@ -348,17 +361,20 @@ def run_single_replicate(
     if use_pipe:
         # Pipe mode: each test gets its own fresh pipe from the generator
         all_tests = []
+        alg_degree = None  # captured once from the first test's generator stderr
         for test_id in dieharder_tests:
             # Tests 200-203 need explicit ntuple values; expand into multiple runs
             ntuple_values = NTUPLE_RANGES.get(test_id, [None])
             for nt in ntuple_values:
                 try:
-                    results = run_dieharder_pipe(
+                    results, deg = run_dieharder_pipe(
                         test_id, wires, gates, seed, mode, burn_in,
                         dieharder_path, cwd, gen_cmd_prefix=gen_cmd_prefix,
                         ntuple=nt,
                     )
                     all_tests.extend(results)
+                    if alg_degree is None and deg is not None:
+                        alg_degree = deg
                     for r in results:
                         nt_str = f" n={nt}" if nt is not None else ""
                         log(f"      test {test_id:>3d}{nt_str} ({r.test_name}): p={r.p_value:.6f} {r.assessment}")
@@ -379,6 +395,7 @@ def run_single_replicate(
             num_weak=num_weak, num_failed=num_failed,
             overall_pass=overall_pass, duration_sec=duration,
             stream_bytes=0,  # no file in pipe mode
+            alg_degree=alg_degree,
         )
 
     # File mode (legacy)
@@ -674,6 +691,7 @@ def _build_results_json(mode_name, stream_mode, config, all_results, m_star, thr
                         "duration_sec": rep.duration_sec,
                         "stream_bytes": rep.stream_bytes,
                         "error": rep.error,
+                        "alg_degree": rep.alg_degree,
                         "tests": [asdict(t) for t in rep.tests],
                     }
                     for rep in r.replicates
@@ -739,6 +757,7 @@ def cmd_worker(args):
         "duration_sec": result.duration_sec,
         "stream_bytes": result.stream_bytes,
         "error": result.error,
+        "alg_degree": result.alg_degree,
         "tests": [asdict(t) for t in result.tests],
     }
 
@@ -985,6 +1004,7 @@ def cmd_collect(args):
                 "duration_sec": rep["duration_sec"],
                 "stream_bytes": rep.get("stream_bytes", 0),
                 "error": rep.get("error"),
+                "alg_degree": rep.get("alg_degree"),
                 "tests": rep["tests"],
             })
 

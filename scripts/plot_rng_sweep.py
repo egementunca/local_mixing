@@ -272,6 +272,85 @@ def plot_pvalues_per_test(data, out_dir):
     plt.close()
 
 
+def plot_alg_degree_vs_pass_rate(data, out_dir):
+    """
+    Scatter plot: minimum algebraic degree vs pass/fail, colored by wire width.
+    Also shows pass rate binned by degree (one bin per unique degree value).
+
+    Only generated when at least one replicate has alg_degree set.
+    Addresses Ran's question: does dieharder performance correlate with alg degree?
+    """
+    # Collect (alg_degree, overall_pass, wires, gates) tuples
+    points = []
+    for r in data["results"]:
+        wires = r["wires"]
+        gates = r["gates"]
+        for rep in r["replicates"]:
+            deg = rep.get("alg_degree")
+            if deg is not None:
+                points.append((deg, int(rep["overall_pass"]), wires, gates))
+
+    if not points:
+        return  # no degree data available
+
+    degrees = [p[0] for p in points]
+    passes  = [p[1] for p in points]
+    wireset = [p[2] for p in points]
+
+    all_wires = sorted(set(wireset))
+    colors = {16: "#e74c3c", 24: "#e67e22", 32: "#2ecc71", 48: "#3498db",
+              64: "#9b59b6", 96: "#1abc9c", 128: "#e91e63",
+              256: "#795548", 512: "#607d8b"}
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # --- Left: scatter with jitter ---
+    rng = np.random.default_rng(0)
+    for wires in all_wires:
+        idx = [i for i, w in enumerate(wireset) if w == wires]
+        d = [degrees[i] for i in idx]
+        p = [passes[i] + rng.uniform(-0.04, 0.04) for i in idx]  # jitter y
+        color = colors.get(wires, "#95a5a6")
+        ax1.scatter(d, p, c=color, s=25, alpha=0.5, label=f"n={wires}", linewidths=0)
+
+    ax1.set_xlabel("Minimum algebraic degree", fontsize=13)
+    ax1.set_ylabel("Pass (1) / Fail (0)  [jittered]", fontsize=13)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(["FAIL", "PASS"])
+    ax1.set_title("Pass/Fail vs Algebraic Degree\n(each dot = one circuit replicate)", fontsize=13)
+    ax1.legend(fontsize=9, ncol=2)
+    ax1.grid(True, alpha=0.3)
+
+    # --- Right: pass rate binned by degree (per wire width) ---
+    for wires in all_wires:
+        idx = [i for i, w in enumerate(wireset) if w == wires]
+        by_deg = defaultdict(list)
+        for i in idx:
+            by_deg[degrees[i]].append(passes[i])
+        deg_vals = sorted(by_deg.keys())
+        rates = [sum(by_deg[d]) / len(by_deg[d]) * 100 for d in deg_vals]
+        color = colors.get(wires, "#95a5a6")
+        ax2.plot(deg_vals, rates, "-o", color=color, label=f"n={wires}",
+                 linewidth=2, markersize=7, alpha=0.85)
+
+    ax2.axhline(y=95, color="gray", linestyle="--", alpha=0.5, label="95% threshold")
+    ax2.set_xlabel("Minimum algebraic degree", fontsize=13)
+    ax2.set_ylabel("Pass rate (%)", fontsize=13)
+    ax2.set_ylim(-5, 105)
+    ax2.set_yticks([0, 25, 50, 75, 100])
+    ax2.set_title("Pass Rate vs Algebraic Degree\n(binned by degree)", fontsize=13)
+    ax2.legend(fontsize=9, ncol=2)
+    ax2.grid(True, alpha=0.3)
+
+    stream_mode = data.get("stream_mode", "counter")
+    fig.suptitle(f"Algebraic Degree vs Dieharder Performance  ({stream_mode} mode)", fontsize=14)
+    plt.tight_layout()
+    path = os.path.join(out_dir, "alg_degree_vs_pass_rate.png")
+    fig.savefig(path, dpi=150)
+    print(f"Saved: {path}")
+    plt.close()
+
+
 def plot_pipeline_diagram(out_dir):
     """Visual pipeline diagram."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 4))
@@ -339,6 +418,7 @@ def main():
     plot_per_test_pass_rate(data, out_dir)
     plot_pvalues_scatter(data, out_dir)
     plot_pvalues_per_test(data, out_dir)
+    plot_alg_degree_vs_pass_rate(data, out_dir)
     plot_pipeline_diagram(out_dir)
 
     print(f"\nAll plots saved to: {out_dir}")

@@ -224,6 +224,29 @@ fn evaluate_circuit_u128(mut state: u128, gates: &[[u8; 3]]) -> u128 {
     state
 }
 
+/// Compute the algebraic degree of each output wire for a gate-57 circuit.
+///
+/// Gate 57: wire[a] ^= wire[b] OR (NOT wire[c])
+/// Over GF(2): new_a = a + 1 + c + b*c, so the highest-degree term is b*c:
+///   new_deg(a) = max(deg(a), deg(b) + deg(c))
+///
+/// Starting condition: each input wire i has degree 1 (it is the monomial x_i).
+/// Returns the algebraic degree of each output wire after applying all gates.
+fn compute_alg_degree(wires: usize, gates: &[[u8; 3]]) -> Vec<u32> {
+    let n = wires as u32;
+    let mut deg: Vec<u32> = vec![1; wires];
+    for gate in gates {
+        let a = gate[0] as usize;
+        let b = gate[1] as usize;
+        let c = gate[2] as usize;
+        // deg(b*c) = deg(b)+deg(c), but boolean polynomials are multilinear so
+        // the degree is capped at n (the number of variables).
+        let new_a = deg[a].max((deg[b] + deg[c]).min(n));
+        deg[a] = new_a;
+    }
+    deg
+}
+
 fn run_rng_stream<W: Write>(
     writer: W,
     wires: usize,
@@ -251,6 +274,17 @@ fn run_rng_stream<W: Write>(
     }
 
     let circuit = random_circuit(wires as u8, gates);
+
+    // Print algebraic degree to stderr (does not affect the bitstream on stdout).
+    // Degree formula: for gate [a,b,c]: new_deg(a) = max(deg(a), deg(b)+deg(c)).
+    {
+        let deg = compute_alg_degree(wires, &circuit.gates);
+        let min_deg = deg.iter().min().copied().unwrap_or(0);
+        let all_degs: Vec<String> = deg.iter().map(|d| d.to_string()).collect();
+        eprintln!("alg_degree_min={}", min_deg);
+        eprintln!("alg_degree_all={}", all_degs.join(","));
+    }
+
     let rng_seed = seed.unwrap_or_else(|| rand::rng().random());
     let mut rng = StdRng::seed_from_u64(rng_seed ^ 0x9e3779b97f4a7c15);
 
